@@ -9,6 +9,15 @@ author: "Ha Trung"
 license: MIT
 homepage: "https://github.com/skappafrost/hermes-gemini-live"
 tags: ["voice", "gemini", "live", "desktop", "speech"]
+
+# Declared so `hermes plugins install` prompts for the key and writes it to the home's .env
+# (plugins_cmd_install.py). This is a prompt, not a load gate — the plugin still fails fast with
+# its own message if the key is missing. GEMINI_LIVE_API_KEY is accepted as an override; see README.
+requires_env:
+  - name: GEMINI_API_KEY
+    description: "Google AI Studio API key for the Gemini Live API (free tier works)"
+    url: "https://aistudio.google.com/apikey"
+    secret: true
 provides_tools: []
 provides_hooks: []
 

@@ -33,4 +33,5 @@ capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
-  requires_env: []
+  requires_env:
+  - GEMINI_API_KEY

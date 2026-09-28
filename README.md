@@ -37,8 +37,9 @@ hermes plugins install skappafrost/hermes-gemini-live
 ```
 
 It will say *"custom (unreviewed) source — not from the Hermes catalog"* until the catalog entry
-below is merged upstream; that warning is about review status, not about the code. Then add the
-key to **that home's** `.env` — Hermes does not read a `.env` from inside the plugin folder:
+below is merged upstream; that warning is about review status, not about the code. Because the
+manifest declares `requires_env: GEMINI_API_KEY`, the installer prompts for the key and writes it
+into the home's `.env` for you. If you install by hand, add it yourself:
 
 ```bash
 # macOS/Linux ~/.hermes  ·  Windows %LOCALAPPDATA%\hermes
