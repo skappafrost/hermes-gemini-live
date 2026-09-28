@@ -253,10 +253,11 @@ Two rules that are easy to break by accident:
   against a scripted Live peer, and each test ends through exactly one pump so no assertion
   depends on which task the loop finished first.
 
-Run them with any Python that has `pytest`, `pytest-asyncio`, `httpx` and `starlette`:
+Run them with any Python that has `pytest`, `pytest-asyncio`, `httpx`, `starlette` and `fastapi`:
 
 ```bash
-python -m pytest -q            # 86 passed
+python -m pytest -q   # 86 passed here; 2 of them need a Hermes checkout on PYTHONPATH
+                      # and skip cleanly without one, which is what CI sees
 ```
 
 The renderer path — a real microphone, a real speaker, real interruptions — is only provable by
