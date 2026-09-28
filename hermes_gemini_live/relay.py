@@ -168,26 +168,19 @@ async def run_relay(browser: Any, session_key: str | None = None,
     # Off the audio loop: a probe is a network round trip, and a slow gateway must not
     # cost the user a dropped syllable.
     lane_status, lane_detail = await asyncio.to_thread(agent_lane.probe, session_key, profile)
-    model = config.model()
-    # Two different refusals, one visible outcome: no delegate offered. Either one has to
-    # reach the user, or a talk-only call looks like a broken assistant.
-    reason = ""
-    if lane_status != agent_lane.STATUS_OK:
-        reason = lane_detail
-    elif not config.supports_tool_calling(model):
-        reason = f"{model} cannot call tools"
-    if reason:
-        logger.warning("hermes-gemini-live: Hermes work is off for this call: %s", reason)
+    offer_tools = lane_status == agent_lane.STATUS_OK
+    if not offer_tools:
+        logger.warning("hermes-gemini-live: agent lane unavailable (%s: %s)",
+                       lane_status, lane_detail)
     try:
-        live = await LiveSession.open(
-            None if reason else tools_module.declarations())
+        live = await LiveSession.open(tools_module.declarations() if offer_tools else None)
     except (LiveError, ConfigError) as exc:
         logger.warning("hermes-gemini-live: call refused: %s", exc)
         await browser.send_text(_dump({"type": "error", "detail": str(exc)}))
         return
-    if reason:
+    if not offer_tools:
         await browser.send_text(_dump({"type": "lane", "status": lane_status,
-                                       "detail": reason}))
+                                       "detail": lane_detail}))
 
     book = agent_lane.RunBook()
     up = asyncio.create_task(_browser_to_live(browser, live, note))

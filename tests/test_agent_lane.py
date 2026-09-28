@@ -185,6 +185,8 @@ def test_a_foreign_profile_reads_its_own_key_not_the_launch_env(monkeypatch):
 def test_the_delegate_is_one_call_and_its_schema_types_are_uppercase():
     declarations = tools.declarations()
     assert len(declarations) == 1
+    # Async-only on the extended-thinking Live models; blocking returns a hard error there.
+    assert declarations[0]["behavior"] == "NON_BLOCKING"
     parameters = declarations[0]["parameters"]
     assert parameters["type"] == "OBJECT"
     assert parameters["properties"]["task"]["type"] == "STRING"

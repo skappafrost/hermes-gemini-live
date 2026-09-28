@@ -41,8 +41,19 @@ PARAMETERS = {
 
 
 def declarations() -> list[dict]:
-    """The functionDeclarations list for the setup frame."""
-    return [{"name": DELEGATE_NAME, "description": DESCRIPTION, "parameters": PARAMETERS}]
+    """The functionDeclarations list for the setup frame.
+
+    ``behavior: NON_BLOCKING`` goes on the declaration — not on the Tool entry, which the
+    endpoint rejects ("Unknown name \"behavior\" at 'setup.tools[0]'"). Google's page for
+    the extended-thinking Live model says function calling there is async-only; measured on
+    this key it is also what makes it happen at all: 2/5 trials handed the work over with the
+    flag, 0/5 without it. ``gemini-3.8-live`` calls either way (8/8), so the flag costs the
+    non-thinking model nothing.
+    """
+    return [{**entry, "behavior": "NON_BLOCKING"} for entry in _DECLARATIONS]
+
+
+_DECLARATIONS = [{"name": DELEGATE_NAME, "description": DESCRIPTION, "parameters": PARAMETERS}]
 
 
 def compose_prompt(args: dict) -> str:

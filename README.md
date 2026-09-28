@@ -50,7 +50,7 @@ Every key is read from the environment of the profile that serves the call. A ke
 | Key | Default | What it does |
 |---|---|---|
 | `GEMINI_LIVE_API_KEY` → `GEMINI_API_KEY` | — | Live credential, server-side only |
-| `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Live model id, `models/` added once. `...-extended-thinking` sounds the same but **cannot call tools** — see the model table |
+| `GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | Live model id, `models/` added once. Any of the four probed ids below works; `gemini-3.8-live` answers ~0.17 s faster |
 | `GEMINI_LIVE_THINKING_LEVEL` | `high` | extended-thinking models **require** a level; only `high`/`low` are accepted |
 | `GEMINI_LIVE_VOICE` | `Puck` | `Puck` `Charon` `Kore` `Fenrir` `Aoede`, **case-sensitive** |
 | `GEMINI_LIVE_SILENCE_MS` | `1200` | how long silence must run before the turn ends (400–5000) |
@@ -68,9 +68,35 @@ Every key is read from the environment of the profile that serves the call. A ke
 | Model | Result |
 |---|---|
 | `gemini-3.8-live` | setup accepted, audio returned at `audio/pcm;rate=24000`; **called `hermes_task`** when asked something it cannot know |
-| `gemini-3.8-live-extended-thinking` | accepted **only** with `generationConfig.thinkingConfig.thinkingLevel`; `minimal` and `auto` are refused. **Accepts a `functionDeclarations` setup and then never calls it** — measured at `high` and at `low`, answering "current time in Tokyo, do not guess" with audio instead. `toolConfig` is not a legal setup field (close 1007), so nothing coaxs it; the delegate is withheld from this model and the call says so out loud |
+| `gemini-3.8-live-extended-thinking` | accepted **only** with `generationConfig.thinkingConfig.thinkingLevel`; `minimal` and `auto` are refused. Calls `hermes_task` as well — **but only under an instruction that forbids it from answering**, see below |
 | `gemini-3.1-flash-live-preview` | accepted; returned a `toolCall` for both the canonical test function and `hermes_task` |
 | `gemini-2.5-flash-native-audio-latest` | accepted; returned a `toolCall` |
+
+**The delegate is where the two models differ most, and the numbers are not close.** Five
+trials each, same question ("current time in Tokyo — you must call hermes_task, do not
+guess"), same strong order in the system instruction, 90 s window:
+
+| Configuration | Handed the work to Hermes |
+|---|---|
+| `gemini-3.8-live` | **8/8** across every run tried, with and without `behavior` |
+| `gemini-3.8-live-extended-thinking` + `behavior: NON_BLOCKING` | 2/5 |
+| `gemini-3.8-live-extended-thinking` alone | 0/5 |
+
+So the flag helps rather than hurts: Google's page for that model says its function calling is
+async-only, and the field belongs on the **FunctionDeclaration** — on the Tool entry the
+endpoint answers `Unknown name "behavior" at 'setup.tools[0]'`. Even with it, extended-thinking
+answers from itself about three times in five, which is the honest cost of choosing it: it
+scores higher on speech quality and on agentic benchmarks, but the one thing the voice lane
+needs — noticing that it cannot know and asking Hermes — is unreliable on it. The default stays
+extended-thinking because that is the accuracy the user asked for; set
+`GEMINI_LIVE_MODEL=gemini-3.8-live` to trade thinking for a delegate that fires.
+
+Other measured dead ends: `toolConfig` and `mode: ANY` do not exist on this wire (close 1007 at
+both `setup` and `setup.generation_config`), so no call can be forced from outside;
+`responseModalities: ["AUDIO","TEXT"]` is refused outright; the question arriving as
+`clientContent` instead of `realtimeInput.text` changes nothing. And `turnComplete` no longer
+means idle on the thinking model, so a listener that stops there scores a late call as a miss —
+beware when re-measuring.
 
 Accepted setup fields: `contextWindowCompression.slidingWindow`, `sessionResumption`,
 `inputAudioTranscription`, `outputAudioTranscription`, `tools.functionDeclarations`,

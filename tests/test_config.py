@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_gemini_live import config
+from hermes_gemini_live import config, tools
 
 
 @pytest.fixture(autouse=True)
@@ -60,14 +60,14 @@ def test_thinking_level_only_applies_to_extended_thinking():
     assert config.thinking_level("gemini-3.8-live-extended-thinking") in config.THINKING_LEVELS
 
 
-def test_tool_calling_is_withheld_from_the_id_proven_silent():
-    # Each half of this assertion is a measured answer to "ask it the current time in
-    # Tokyo and never guess": the True ids returned a toolCall, the False one spoke
-    # audio instead at both thinking levels.
-    for model_id in ("gemini-3.8-live", "gemini-3.1-flash-live-preview",
-                     "gemini-2.5-flash-native-audio-latest"):
-        assert config.supports_tool_calling(model_id) is True
-    assert config.supports_tool_calling("gemini-3.8-live-extended-thinking") is False
+def test_the_instruction_names_the_delegate_and_removes_the_escape():
+    # Measured: gemini-3.8-live calls the delegate on an invitation, but
+    # extended-thinking invents an answer until told it holds no present-tense knowledge.
+    # So the contract is that the instruction points at the tool by its real name and
+    # forbids self-answer — not the exact prose.
+    assert tools.DELEGATE_NAME in config.DEFAULT_INSTRUCTIONS
+    assert "no knowledge of the present" in config.DEFAULT_INSTRUCTIONS
+    assert "never guess" in config.DEFAULT_INSTRUCTIONS
 
 
 def test_unsupported_thinking_level_refuses(monkeypatch):
