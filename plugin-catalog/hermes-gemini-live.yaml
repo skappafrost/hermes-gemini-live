@@ -1,6 +1,6 @@
 name: hermes-gemini-live
 repo: https://github.com/skappafrost/hermes-gemini-live
-sha: 0649eaa15df093e193265b2382f27576ab1baccc
+sha: d1fc67d378dee1b751f49c9093abfe01e8f04ae3
 description: >-
   Realtime duplex voice with the Gemini Live API, built around handing real work to Hermes.
   A single control in the composer (not a floating panel): tap, speak, hear the model, and when
