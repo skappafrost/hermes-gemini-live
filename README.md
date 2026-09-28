@@ -84,7 +84,16 @@ guess"), same strong order in the system instruction, 90 s window:
 
 So the flag helps rather than hurts: Google's page for that model says its function calling is
 async-only, and the field belongs on the **FunctionDeclaration** — on the Tool entry the
-endpoint answers `Unknown name "behavior" at 'setup.tools[0]'`. Even with it, extended-thinking
+endpoint answers `Unknown name "behavior" at 'setup.tools[0]'`.
+
+This 2/5 is a decision, not a dropped frame. A second run gave the socket 90 s past
+`turnComplete` before scoring a miss (Google warns that `turnComplete` no longer means idle
+here) and the rate was unchanged at 2/5 — and in both of those trials `turnComplete` arrived at
+~3.3 s while the call landed at **5.9 s and 13.5 s after the question**, so the late-delivery
+path works and is what the relay already relies on. In the three misses the model answered in
+about the same 3 s, meaning it never hesitated: it simply chose to answer. Nothing on the wire
+changes that — `toolConfig`, `mode: ANY` and function scheduling are all unsupported on this
+model, so there is no way to mandate a call. Even with it, extended-thinking
 answers from itself about three times in five, which is the honest cost of choosing it: it
 scores higher on speech quality and on agentic benchmarks, but the one thing the voice lane
 needs — noticing that it cannot know and asking Hermes — is unreliable on it. The default stays
