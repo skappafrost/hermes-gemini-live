@@ -51,7 +51,7 @@ Every key is read from the environment of the profile that serves the call. A ke
 |---|---|---|
 | `GEMINI_LIVE_API_KEY` → `GEMINI_API_KEY` | — | Live credential, server-side only |
 | `GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | Live model id, `models/` added once. Any of the four probed ids below works; `gemini-3.8-live` answers ~0.17 s faster |
-| `GEMINI_LIVE_THINKING_LEVEL` | `high` | extended-thinking models **require** a level; only `high`/`low` are accepted |
+| `GEMINI_LIVE_THINKING_LEVEL` | `high` | extended-thinking models **require** a level; only `high`/`low` are accepted. Ignored for other ids — see "thinking" below |
 | `GEMINI_LIVE_VOICE` | `Puck` | `Puck` `Charon` `Kore` `Fenrir` `Aoede`, **case-sensitive** |
 | `GEMINI_LIVE_SILENCE_MS` | `1200` | how long silence must run before the turn ends (400–5000) |
 | `GEMINI_LIVE_PREFIX_MS` | `300` | lead-in kept before speech (100–1500) |
@@ -93,12 +93,26 @@ here) and the rate was unchanged at 2/5 — and in both of those trials `turnCom
 path works and is what the relay already relies on. In the three misses the model answered in
 about the same 3 s, meaning it never hesitated: it simply chose to answer. Nothing on the wire
 changes that — `toolConfig`, `mode: ANY` and function scheduling are all unsupported on this
-model, so there is no way to mandate a call. Even with it, extended-thinking
-answers from itself about three times in five, which is the honest cost of choosing it: it
-scores higher on speech quality and on agentic benchmarks, but the one thing the voice lane
-needs — noticing that it cannot know and asking Hermes — is unreliable on it. The default stays
-extended-thinking because that is the accuracy the user asked for; set
-`GEMINI_LIVE_MODEL=gemini-3.8-live` to trade thinking for a delegate that fires.
+model, so there is no way to mandate a call. So extended-thinking answers from itself about
+three times in five, which is the honest cost of choosing it: it scores higher on speech
+quality and on the agentic benchmarks, but the one thing the voice lane needs — noticing that
+it cannot know and asking Hermes — is unreliable on it. That is why the default is
+`gemini-3.8-live`; `GEMINI_LIVE_MODEL=gemini-3.8-live-extended-thinking` opts back in.
+
+**There is no thinking knob on `gemini-3.8-live`, and it is already at maximum.** Measured on a
+trick arithmetic question, reading `usageMetadata.thoughtsTokenCount`:
+
+| Sent in `generationConfig` | Thought tokens | Total |
+|---|---|---|
+| nothing | 941 | 980 |
+| `thinkingBudget: -1` (dynamic) | 939 | 1004 |
+| `thinkingBudget: -1` + `includeThoughts` | 1055 | 1655 |
+
+`thinkingLevel` is refused outright ("Thinking level is not supported for this model"),
+`thinkingBudget` parses but does nothing (941 vs 939 is the same number), and
+`includeThoughts` raises the *reported* tokens only because the thoughts ride along in the
+response. The model spends ~940 thought tokens per turn by itself, so `thinking_level()`
+returning None for this id is its maximum rather than an omission.
 
 Other measured dead ends: `toolConfig` and `mode: ANY` do not exist on this wire (close 1007 at
 both `setup` and `setup.generation_config`), so no call can be forced from outside;

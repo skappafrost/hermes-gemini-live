@@ -12,6 +12,7 @@ import asyncio
 import json
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from hermes_gemini_live import agent_lane, relay
 from hermes_gemini_live.live_client import LiveError
@@ -237,6 +238,21 @@ async def test_the_delegate_tool_is_offered_when_the_lane_is_live(opened):
     await relay.run_relay(FakeBrowser([]))
     names = [entry["name"] for entry in opened.seen["tools"]]
     assert names == ["hermes_task"]
+
+
+@pytest.mark.asyncio
+async def test_a_browser_that_navigates_away_ends_the_call_without_an_error(opened):
+    # The page disappearing mid-call used to come back through the same path as a real
+    # fault, so every navigation painted "the system failed" on the panel.
+    class Gone(FakeBrowser):
+        async def receive_text(self):
+            raise WebSocketDisconnect()
+
+    live = opened(FakeLive(end_after_script=False))
+    browser = Gone([])
+    await relay.run_relay(browser)
+    assert [f for f in browser.sent if f["type"] == "error"] == []
+    assert live.closed is True
 
 
 @pytest.mark.asyncio

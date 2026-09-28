@@ -11,9 +11,11 @@ import os
 ENV_PREFIX = "GEMINI_LIVE_"
 
 #: Proven against the live endpoint by the spike: setup accepted, audio returned at
-#: audio/pcm;rate=24000. ``...-extended-thinking`` additionally REQUIRES a thinking
-#: level ("Thinking level must be specified for this model") and accepts high|low.
-DEFAULT_MODEL = "gemini-3.8-live-extended-thinking"
+#: audio/pcm;rate=24000. ``...-extended-thinking`` additionally REQUIRES a thinking level
+#: ("Thinking level must be specified for this model") and accepts high|low — but hands work
+#: to Hermes in only 2 of 5 turns against this model's 8 of 8, which is the difference
+#: between a voice lane that acts and one that narrates. See the README table.
+DEFAULT_MODEL = "gemini-3.8-live"
 THINKING_LEVELS = ("high", "low")
 DEFAULT_THINKING_LEVEL = "high"
 
@@ -164,7 +166,12 @@ def thinking_level(model_id: str) -> str | None:
     """The level extended-thinking models demand, or None for models that take none.
 
     Only ever set for the ids the spike proved require it: sending the field to a
-    model that has not been probed with it would guess at a wire value.
+    model that has not been probed with it would guess at a wire value. Measured here,
+    because it looks like an available knob and is not: ``gemini-3.8-live`` refuses
+    ``thinkingLevel`` outright ("Thinking level is not supported for this model"), parses
+    ``thinkingBudget`` but ignores it — thought tokens were 941 with no config at all and 939
+    with ``thinkingBudget: -1``, which is the same number — and it already spends ~940 thought
+    tokens per turn on its own. So None for this model is its maximum, not an omission.
     """
     if "extended-thinking" not in model_id:
         return None

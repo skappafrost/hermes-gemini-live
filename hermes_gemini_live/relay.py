@@ -189,17 +189,32 @@ async def run_relay(browser: Any, session_key: str | None = None,
         done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             error = task.exception()
-            if error:
-                note["reason"] = str(error)
-                logger.warning("hermes-gemini-live: relay pump failed: %s: %s",
-                               type(error).__name__, error)
-                await browser.send_text(_dump({"type": "error",
-                                               "detail": _safe(error),
-                                               "ended": True}))
+            if not error:
+                continue
+            note["reason"] = str(error)
+            if task is up:
+                # Which pump failed says who left. The browser pump only dies when the page
+                # goes away — a navigation, not a fault — and there is nobody to tell, so
+                # this is logged as an ordinary end. The panel used to receive an error
+                # frame here, which read as "the system failed" every time the user clicked
+                # somewhere else mid-call.
+                logger.info("hermes-gemini-live: call ended (%s from the browser side)",
+                            type(error).__name__)
+                continue
+            logger.warning("hermes-gemini-live: relay pump failed: %s: %s",
+                           type(error).__name__, error)
+            await browser.send_text(_dump({"type": "error", "detail": _safe(error),
+                                           "ended": True}))
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
     finally:
+        # A pump that lost the race can finish with an exception nobody asked for — the
+        # cancel lands after it already raised. Retrieving it here keeps asyncio from
+        # printing a bare traceback that looks like a crash in the log.
+        for task in (up, down):
+            if task.done() and not task.cancelled():
+                task.exception()
         await live.close()
         if book.pending():
             logger.info("hermes-gemini-live: call ended with %d run(s) still going: %s",
