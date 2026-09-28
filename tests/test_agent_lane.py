@@ -182,15 +182,22 @@ def test_a_foreign_profile_reads_its_own_key_not_the_launch_env(monkeypatch):
     assert bound == ["zen_agent"]
 
 
-def test_the_delegate_is_one_call_and_its_schema_types_are_uppercase():
+def test_the_three_verbs_are_offered_and_their_schema_types_are_uppercase():
     declarations = tools.declarations()
-    assert len(declarations) == 1
-    # Async-only on the extended-thinking Live models; blocking returns a hard error there.
-    assert declarations[0]["behavior"] == "NON_BLOCKING"
-    parameters = declarations[0]["parameters"]
-    assert parameters["type"] == "OBJECT"
-    assert parameters["properties"]["task"]["type"] == "STRING"
-    assert parameters["required"] == ["task"]
+    assert [entry["name"] for entry in declarations] == [
+        tools.DELEGATE_NAME, tools.BOARD_NAME, tools.UPDATE_NAME]
+    for entry in declarations:
+        # Async-only on the extended-thinking Live models; blocking returns a hard error there.
+        assert entry["behavior"] == "NON_BLOCKING"
+        assert entry["parameters"]["type"] == "OBJECT"
+    delegate = declarations[0]["parameters"]
+    assert delegate["properties"]["task"]["type"] == "STRING"
+    assert delegate["required"] == ["task"]
+    update = declarations[2]["parameters"]
+    assert update["required"] == ["task", "action"]
+    # The enum the model may choose and the verbs the relay will act on are one list, so a
+    # word can never be offered on the wire and refused at the lane.
+    assert update["properties"]["action"]["enum"] == list(tools.ACTIONS)
 
 
 def test_compose_prompt_folds_context_in_and_refuses_empty():
@@ -200,10 +207,22 @@ def test_compose_prompt_folds_context_in_and_refuses_empty():
         "why?\n\nContext from the voice call: prod cluster")
 
 
-def test_run_book_tracks_only_live_runs():
+def test_the_board_keeps_waiting_and_finished_tasks_visible_to_the_call():
     book = agent_lane.RunBook()
-    book.add("run_b")
-    book.add("run_a")
-    assert book.pending() == ["run_a", "run_b"]
-    book.discard("run_a")
-    assert book.pending() == ["run_b"]
+    book.register("b", "check the weather")
+    book.register("a", "list downloads")
+    book.attach_run("a", "run_a")
+    assert book.pending() == ["a", "b"]
+
+    book.set_state("a", "needs_input", question="It wants to run: rm -rf scratch",
+                   request_id="req_1")
+    assert book.pending() == ["a", "b"]
+    assert book.run_id("a") == "run_a"
+    assert book.request_id("a") == "req_1"
+    assert "waiting on you: It wants to run" in book.board()
+
+    book.set_state("b", "completed", result="sunny, 31 degrees")
+    assert book.pending() == ["a"]
+    row = [line for line in book.board().splitlines() if line.startswith("#b")][0]
+    assert "[completed]" in row and "sunny, 31 degrees" in row
+    assert book.run_id("nope") is None and book.request_id("nope") == ""

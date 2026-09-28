@@ -32,6 +32,12 @@ RESULT_NOTE = (
     "Tell the user that outcome now in one short spoken sentence. Do not invent details, "
     "do not add commentary, and do not start another task about it."
 )
+NEEDS_NOTE = (
+    "Task #{task_id} has stopped and needs the user: {question}\n"
+    "Ask the user about it now in one short spoken question, wait for their answer, then call "
+    "hermes_task_update on task {task_id} with action approve or deny using what they said. "
+    "Never decide the approval yourself, and never start a second task about this one."
+)
 
 
 async def _browser_to_live(browser: Any, live: LiveSession, note: dict) -> None:
@@ -58,12 +64,20 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
     The rule is about not waiting on a *run* (seconds to minutes), not about never
     awaiting: a receipt frame is what lets the model keep talking, so it goes out now.
     """
-    task = tools_module.compose_prompt(call.get("args") or {})
     call_id = str(call.get("id") or "")
     name = call.get("name")
+    args = call.get("args") or {}
     if not call_id:
         logger.warning("hermes-gemini-live: tool call with no id was dropped")
         return
+    if name == tools_module.BOARD_NAME:
+        await live.send_function_response(call_id, book.board(), name)
+        return
+    if name == tools_module.UPDATE_NAME:
+        await _update_task(call_id, args, live, browser, book, session_key, profile)
+        return
+
+    task = tools_module.compose_prompt(args)
     if not task:
         await live.send_function_response(call_id, "No task text was supplied.", name)
         return
@@ -79,7 +93,80 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
         session_key=session_key,
         book=book,
         profile=profile,
+        # One name per task: the id in this receipt is the id the model addresses later.
+        task_id=call_id,
+        on_needs_input=_make_parker(live, browser, loop),
     )
+
+
+async def _update_task(call_id: str, args: dict, live: LiveSession, browser: Any,
+                       book: agent_lane.RunBook, session_key: str | None,
+                       profile: str | None) -> None:
+    """Answer, redirect or abandon a task the model already started.
+
+    These hit the api_server, so they go off-loop with ``to_thread``: the audio loop keeps
+    running, only this one tool call waits — which is what the model asked for.
+    """
+    task = str(args.get("task") or "").strip().lstrip("#")
+    action = str(args.get("action") or "").strip().lower()
+    answer = str(args.get("answer") or "").strip()
+    if action not in tools_module.ACTIONS:
+        await live.send_function_response(
+            call_id, f"BAD_REQUEST unknown action '{action}'; "
+                     f"use {', '.join(tools_module.ACTIONS)}.")
+        return
+    run_id = book.run_id(task)
+    if not run_id:
+        await live.send_function_response(
+            call_id, f"NO_SUCH_TASK {task}: it is not on this call's board. "
+                     f"Call hermes_tasks to see what is.")
+        return
+
+    try:
+        if action in ("approve", "deny"):
+            agent_lane.approve(run_id, "once" if action == "approve" else "deny",
+                               book.request_id(task), session_key=session_key, profile=profile)
+        elif action == "steer":
+            agent_lane.steer(run_id, answer or "The user has no further instruction.",
+                             session_key=session_key, profile=profile)
+        else:
+            agent_lane.stop(run_id, session_key=session_key, profile=profile)
+    except agent_lane.LaneUnavailable as exc:
+        # A refused control is news the model must say out loud — silently retrying would
+        # leave the user believing their answer landed.
+        book.set_state(task, "needs_input", question=str(exc))
+        await live.send_function_response(call_id, f"UPDATE_FAILED {task}: {exc}")
+        await browser.send_text(_dump({"type": "task_failed", "id": task,
+                                       "detail": str(exc)[:200]}))
+        return
+
+    book.set_state(task, "running" if action in ("approve", "steer") else "cancelled")
+    await live.send_function_response(call_id, f"UPDATE_DONE {task} {action}.")
+    await browser.send_text(_dump({"type": "task_update", "id": task, "action": action}))
+
+
+def _make_parker(live: LiveSession, browser: Any, loop: asyncio.AbstractEventLoop):
+    """A worker-thread callback that puts a waiting task in front of the model.
+
+    The approval question arrives on a thread that owns no sockets, so it is handed to the
+    loop exactly like a finished result is.
+    """
+    def on_needs_input(task_id: str, question: str, request_id: str) -> None:
+        async def deliver() -> None:
+            try:
+                await live.send_text(NEEDS_NOTE.format(task_id=task_id, question=question))
+                await browser.send_text(_dump({"type": "task_needs_input", "id": task_id,
+                                               "question": question[:200]}))
+            except (LiveError, RuntimeError) as exc:
+                logger.info("hermes-gemini-live: task %s is waiting but the call ended (%s)",
+                            task_id, exc)
+
+        try:
+            asyncio.run_coroutine_threadsafe(deliver(), loop)
+        except RuntimeError:
+            logger.info("hermes-gemini-live: task %s needs input after its call closed", task_id)
+
+    return on_needs_input
 
 
 def _make_finisher(live: LiveSession, browser: Any, call_id: str,

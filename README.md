@@ -141,9 +141,24 @@ Rejected with close code 1007: `threshold`, `voiceActivityConfig`, `serverVad`, 
 - Rate ceiling for these Live models is **64k tokens/minute** (no RPM/RPD/TPD per Google), and
   audio tokens stream continuously rather than per prompt, so the practical limit is call
   length, not message count.
-- One delegated tool by design (`hermes_task`). Hermes' own agent decides which of its 30+
-  toolsets to use, so the setup frame carries no tool schemas. A Hermes run measured **75.5 s**
-  for a one-word answer, which is why the receipt-then-speak shape is not optional.
+- **Three verbs, not thirty tools**: `hermes_task` starts work, `hermes_tasks` reads the
+  board, `hermes_task_update(task, action)` answers or redirects one task. Hermes' own agent
+  picks which of its 30+ toolsets to use, so the setup frame carries no tool schemas. A Hermes
+  run measured **75.5 s** for a one-word answer, which is why the receipt-then-speak shape is
+  not optional.
+- **Multi-task is one Live session plus a board**, not one session per task: several runs can
+  be in flight (the lane pool is 4 deep, because a run parked on an approval keeps its worker
+  while it waits), each keeps the id the model was given in its receipt, and finished tasks
+  stay on the board for the rest of the call so "what happened to the other one" costs no new
+  run. Closing the call is the only thing that forgets them — `sessionResumption` is enabled
+  and its handle is forwarded to the panel, but no code resumes from it yet, so a new call
+  starts with no memory of the old one.
+- When a run stops for approval the lane says so out loud: `waiting_for_approval` carries a
+  redacted `approval` event (`api_server.py:113-126`), the model is told to ask the user and
+  then call `hermes_task_update`, and the panel reads **"Hermes needs you"** — parked beats
+  silent. Control calls must carry the same `X-Hermes-Session-Key` the run was submitted with:
+  ownership is by idempotency scope (`api_server_runs.py:1023-1028`), and the wrong scope
+  answers 404, not 403.
 - A delegated run is routed to `/p/<profile>/` when this process serves a named profile:
   an unprefixed run would resume in the **default** profile's memory.
 - Not supported: Discord, the terminal lane, wake word, cascade TTS, memory write-back from

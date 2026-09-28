@@ -30,7 +30,18 @@ DEFAULT_API_SERVER_URL = "http://127.0.0.1:8642"
 RUNS_PATH = "/v1/runs"
 CAPABILITIES_PATH = "/v1/capabilities"
 
-TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+#: Read from core rather than guessed: ``api_server_run_idempotency.py:19``. ``interrupted``
+#: is what a run becomes when the gateway restarts under it
+#: (``api_server_runs.py:409-412``) — missing it here used to mean the voice lane waited the
+#: full deadline for an answer that would never come.
+TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
+#: A live run that has stopped moving until a human answers it: the agent hit a command that
+#: needs approval (``api_server_runs.py:857`` parks the status there with the redacted
+#: ``approval`` event attached).
+NEEDS_INPUT = "waiting_for_approval"
+#: Approval choices the runs API accepts (``api_server_runs.py:1185``); a room-scoped grant
+#: narrows this to once|deny, which is not our case — we are the submitting session.
+APPROVAL_CHOICES = ("once", "session", "always", "deny")
 
 STATUS_OK = "ok"
 STATUS_ABSENT = "absent"
@@ -43,7 +54,10 @@ MAX_SPEAKABLE_CHARS = 4000
 POLL_BACKOFF_S = (1.0, 2.0, 4.0)
 MAX_RUN_SECONDS = 900.0
 
-_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gml-agent-lane")
+#: Four, not one: a task parked on an approval holds its worker while it waits (the poll
+#: loop is what notices the approval and speaks it), so a single unanswered task must not be
+#: able to lock the lane.
+_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gml-agent-lane")
 
 
 class LaneUnavailable(RuntimeError):
@@ -198,6 +212,69 @@ def fetch(run_id: str, session_key: str | None = None,
     return payload
 
 
+def _control(run_id: str, verb: str, body: dict | None = None, *, session_key: str | None = None,
+             profile: str | None = None) -> dict:
+    """POST one of /approval, /steer, /stop for a run we started.
+
+    Ownership is by idempotency scope, and the submitting session key IS that scope
+    (``api_server_runs.py:1023-1028`` → ``_request_owns_run`` compares owner to
+    ``_run_idempotency_scope(request)``). So every control call here must carry the same
+    session key the run was submitted with, or the server answers 404 run-not-found.
+    """
+    url = f"{base_url(profile)}{RUNS_PATH}/{run_id}/{verb}"
+    try:
+        response = httpx.post(url, json=body or {}, headers=headers(session_key, profile),
+                              timeout=30.0)
+    except httpx.HTTPError as exc:
+        raise LaneUnavailable(f"I couldn't reach the Hermes api server ({type(exc).__name__})") from exc
+    if response.status_code // 100 != 2:
+        detail = (response.json().get("error") or {}).get("message") if _is_json(response) else None
+        raise LaneUnavailable(f"the Hermes api server refused to {verb} that run "
+                              f"({response.status_code}): {detail or response.text[:160] or 'no detail'}")
+    return _json_object(response)
+
+
+def _is_json(response) -> bool:
+    try:
+        response.json()
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+def _json_object(response) -> dict:
+    try:
+        value = response.json()
+    except (ValueError, AttributeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def approve(run_id: str, choice: str, request_id: str | None = None, *,
+            session_key: str | None = None, profile: str | None = None) -> dict:
+    """Resolve a pending approval. ``choice`` is one of APPROVAL_CHOICES; the request id is
+    carried when the run parked more than one."""
+    if choice not in APPROVAL_CHOICES:
+        raise LaneUnavailable(f"'{choice}' is not an approval choice ({', '.join(APPROVAL_CHOICES)})")
+    body: dict = {"choice": choice}
+    if request_id:
+        body["request_id"] = request_id
+    return _control(run_id, "approval", body, session_key=session_key, profile=profile)
+
+
+def steer(run_id: str, text: str, *, session_key: str | None = None,
+          profile: str | None = None) -> dict:
+    """Guide a run that is still working. Only a ``running`` run takes it
+    (``api_server_runs.py:1228-1231`` answers 409 otherwise)."""
+    if not (text or "").strip():
+        raise LaneUnavailable("there was nothing to say to that run")
+    return _control(run_id, "steer", {"input": text}, session_key=session_key, profile=profile)
+
+
+def stop(run_id: str, *, session_key: str | None = None, profile: str | None = None) -> dict:
+    return _control(run_id, "stop", None, session_key=session_key, profile=profile)
+
+
 def speakable(text: str) -> str:
     """Prose the model can read aloud: no markdown furniture, no bare paths, no code."""
     if not text:
@@ -215,10 +292,17 @@ def speakable(text: str) -> str:
 
 def await_result(run_id: str, session_key: str | None = None,
                  deadline_seconds: float = MAX_RUN_SECONDS,
-                 profile: str | None = None) -> tuple[str, str]:
-    """Poll to a terminal status. Blocking — call it only from a worker thread."""
+                 profile: str | None = None, on_needs_input=None) -> tuple[str, str]:
+    """Poll to a terminal status. Blocking — call it only from a worker thread.
+
+    ``on_needs_input(run_id, question)`` fires once per parked approval, so the voice lane can
+    ask the user about it while the run sits still. The approval event carries the flagged
+    command already redacted server-side (``api_server.py:113-126``), which is the whole
+    reason it is safe to speak.
+    """
     started = time.monotonic()
     attempt = 0
+    asked: set[str] = set()
     while True:
         status_row = fetch(run_id, session_key=session_key, profile=profile)
         state = str(status_row.get("status") or "")
@@ -227,51 +311,116 @@ def await_result(run_id: str, session_key: str | None = None,
                 return state, speakable(str(status_row.get("output") or ""))
             detail = status_row.get("error") or state
             return state, speakable(str(detail))
+        if state == NEEDS_INPUT and on_needs_input is not None:
+            approval = status_row.get("approval") or {}
+            request_id = str(approval.get("request_id") or "")
+            if request_id not in asked:
+                asked.add(request_id)
+                on_needs_input(run_id, _approval_question(approval), request_id)
         if time.monotonic() - started > deadline_seconds:
             return "timed_out", f"Hermes was still working after {int(deadline_seconds)} seconds."
         time.sleep(POLL_BACKOFF_S[min(attempt, len(POLL_BACKOFF_S) - 1)])
         attempt += 1
 
 
+def _approval_question(approval: dict) -> str:
+    """The approval event in one speakable line, with the command last."""
+    command = str(approval.get("command") or "").strip()
+    reason = str(approval.get("reason") or approval.get("message") or "").strip()
+    if command and reason:
+        return f"{reason} It wants to run: {command}"
+    return reason or (f"It wants to run: {command}" if command else "Hermes needs your approval")
+
+
 class RunBook:
-    """Live run ids started by one call, so leaving the call stops nothing silently."""
+    """The board for one voice call: every task it started, what it was, and where it stands.
+
+    Kept across a call so the model can be asked "what happened with the other one" without
+    re-running it, and so a task the model addressed by id can be resolved back to its run.
+    """
 
     def __init__(self) -> None:
-        self._ids: set[str] = set()
+        self._tasks: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def add(self, run_id: str) -> None:
+    def register(self, task_id: str, prompt: str) -> None:
         with self._lock:
-            self._ids.add(run_id)
+            self._tasks[task_id] = {"id": task_id, "prompt": prompt[:120], "run_id": None,
+                                    "state": "running", "question": "", "result": "",
+                                    "request_id": ""}
 
-    def discard(self, run_id: str) -> None:
+    def run_id(self, task_id: str) -> str | None:
         with self._lock:
-            self._ids.discard(run_id)
+            task = self._tasks.get(task_id)
+            return task["run_id"] if task else None
+
+    def request_id(self, task_id: str) -> str:
+        """The approval request a parked task waits on, when the server named one."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            return task["request_id"] if task else ""
+
+    def attach_run(self, task_id: str, run_id: str) -> None:
+        """Record the run behind a task — register() happens before submit, so it can't."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is not None:
+                task["run_id"] = run_id
+
+    def set_state(self, task_id: str, state: str, *, question: str = "",
+                  result: str = "", request_id: str = "") -> None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            task["state"] = state
+            if question:
+                task["question"] = question
+            if result:
+                task["result"] = result[:MAX_SPEAKABLE_CHARS]
+            if request_id:
+                task["request_id"] = request_id
 
     def pending(self) -> list[str]:
+        """Task ids still open — working or waiting on someone."""
         with self._lock:
-            return sorted(self._ids)
+            return sorted(key for key, task in self._tasks.items()
+                          if task["state"] in ("running", "needs_input"))
+
+    def board(self) -> str:
+        """One line per task, oldest first — the text the model reads when it asks."""
+        with self._lock:
+            rows = list(self._tasks.values())
+        if not rows:
+            return "No tasks have been started in this call."
+        return "\n".join(
+            f"#{task['id']} [{task['state']}] {task['prompt']}"
+            + (f" — waiting on you: {task['question']}" if task["state"] == "needs_input" else "")
+            + (f" — {task['result'][:200]}" if task["state"] == "completed" and task["result"] else "")
+            for task in rows)
 
 
 def start_task(prompt: str, on_finished, session_key: str | None = None,
-               book: RunBook | None = None, profile: str | None = None) -> str:
+               book: RunBook | None = None, profile: str | None = None,
+               task_id: str | None = None, on_needs_input=None) -> str:
     """Hand a task to the pool and return immediately.
 
     ``on_finished(task_id, state, text)`` is called later from a worker thread, so the
-    caller owns whatever it takes to get that result back onto its event loop.
+    caller owns whatever it takes to get that result back onto its event loop. ``task_id`` is
+    passed by the relay as the model's own call id, so the id the model hears in the receipt
+    is the id it addresses later — one name per task, not two.
     """
-    task_id = uuid.uuid4().hex[:8]
+    task_id = task_id or uuid.uuid4().hex[:8]
+    if book is not None:
+        book.register(task_id, prompt)
 
     def worker() -> tuple[str, str]:
         try:
             run_id = submit(prompt, session_key=session_key, profile=profile)
             if book is not None:
-                book.add(run_id)
-            try:
-                return await_result(run_id, session_key=session_key, profile=profile)
-            finally:
-                if book is not None:
-                    book.discard(run_id)
+                book.attach_run(task_id, run_id)
+            return await_result(run_id, session_key=session_key, profile=profile,
+                                on_needs_input=_parked(book, task_id, on_needs_input))
         except LaneUnavailable as exc:
             return "unavailable", speakable(str(exc))
 
@@ -279,8 +428,21 @@ def start_task(prompt: str, on_finished, session_key: str | None = None,
 
     def deliver() -> None:
         state, text = future.result()
+        if book is not None:
+            book.set_state(task_id, state, result=text)
         on_finished(task_id, state, text)
 
     watcher = threading.Thread(target=deliver, name=f"gml-deliver-{task_id}", daemon=True)
     future.add_done_callback(lambda _f: watcher.start())
     return task_id
+
+
+def _parked(book: RunBook | None, task_id: str, on_needs_input):
+    """Wrap the caller's callback so the board learns the task is waiting, not just the model."""
+    def note(run_id: str, question: str, request_id: str) -> None:
+        if book is not None:
+            book.set_state(task_id, "needs_input", question=question, request_id=request_id)
+        if on_needs_input is not None:
+            on_needs_input(task_id, question, request_id)
+
+    return note

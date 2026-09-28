@@ -1,22 +1,34 @@
-"""The one tool this voice lane offers the model.
+"""The tools this voice lane offers the model.
 
-Deliberately a single delegate rather than Hermes' real tool list: the api_server runs
-the whole toolset server-side, so shipping 30 JSON schemas into the setup frame would
-spend tokens on every call to describe capabilities the model may not need, and would
-still leave the voice model making fine-grained tool decisions it is not good at. One
-"do this work" call, and Hermes decides how.
+Deliberately a small set of verbs over one delegate rather than Hermes' real tool list: the
+api_server runs the whole toolset server-side, so shipping 30 JSON schemas into the setup
+frame would spend tokens on every call to describe capabilities the model is not good at
+using from audio. One "do this work" call plus the two that make multi-tasking honest —
+``hermes_tasks`` to read the board, ``hermes_task_update`` to answer or redirect a task that
+is waiting. Without those two the model can start work but never finish it: a run parked on
+an approval is invisible to it, and a second request forces a duplicate run.
 """
 
 from __future__ import annotations
 
 DELEGATE_NAME = "hermes_task"
+BOARD_NAME = "hermes_tasks"
+UPDATE_NAME = "hermes_task_update"
+
+TASK_TOOLS = (DELEGATE_NAME, BOARD_NAME, UPDATE_NAME)
+
+#: What the model may do to a task already on the board. One list on purpose: the enum the
+#: declaration offers and the verbs the relay acts on must never drift apart.
+ACTIONS = ("approve", "deny", "steer", "stop")
 
 DESCRIPTION = (
     "Hand real work to Hermes: files, terminals, web, code, memory, anything the user's "
-    "install can do. The call returns immediately with a receipt — Hermes keeps working "
+    "install can do. The call returns immediately with a short task id — Hermes keeps working "
     "in the background and the result is delivered to you later as a system note. After "
     "calling it, say in one short sentence that you are on it, then stay quiet until the "
-    "result arrives. Never invent the result."
+    "result arrives. Never invent the result. Several tasks can run at once, and the user may "
+    "ask about one while another is still going: check hermes_tasks before starting anything "
+    "they might already have asked for."
 )
 
 #: Gemini's functionDeclarations schema uses upper-case type names; a lowercase "object"
@@ -53,7 +65,39 @@ def declarations() -> list[dict]:
     return [{**entry, "behavior": "NON_BLOCKING"} for entry in _DECLARATIONS]
 
 
-_DECLARATIONS = [{"name": DELEGATE_NAME, "description": DESCRIPTION, "parameters": PARAMETERS}]
+_DECLARATIONS = [
+    {"name": DELEGATE_NAME, "description": DESCRIPTION, "parameters": PARAMETERS},
+    {
+        "name": BOARD_NAME,
+        "description": (
+            "Read the task board: every task this call has started, its short id, whether it "
+            "is working, waiting on the user, done or failed. Call it before starting work that "
+            "might already be running, and whenever the user asks what happened to something "
+            "they already requested. It answers from the call's own memory — no new work runs."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": UPDATE_NAME,
+        "description": (
+            "Act on a task already on the board, by its short id. 'approve' and 'deny' answer a "
+            "task that stopped to ask permission — say what it asked first and use the user's own "
+            "answer, never your own judgement. 'steer' sends new information to a task that is "
+            "still working. 'stop' abandons one the user no longer wants."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "task": {"type": "STRING", "description": "The task id from the board, without the #."},
+                "action": {"type": "STRING", "enum": list(ACTIONS),
+                           "description": "What to do with it."},
+                "answer": {"type": "STRING", "description": "For 'steer': what to tell it. "
+                           "For approve/deny: the user's words, if any."},
+            },
+            "required": ["task", "action"],
+        },
+    },
+]
 
 
 def compose_prompt(args: dict) -> str:

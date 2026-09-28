@@ -231,7 +231,8 @@ function VoiceLevelBars ({ level, active }) {
  * relay, or a frame that says the call failed.
  */
 const call = {
-  state: 'idle', detail: '', level: 0, elapsed: 0, speaking: false, pending: [], status: null,
+  state: 'idle', detail: '', level: 0, elapsed: 0, speaking: false, pending: [], waiting: [],
+  status: null,
   muted: false,
   socket: null, player: null, stopCapture: null,
   lastAudio: 0, lastInText: 0, startedAt: 0, taskAt: 0, micPeak: 0,
@@ -290,6 +291,7 @@ function tearDown (note) {
   call.level = 0
   call.speaking = false
   call.pending = []
+  call.waiting = []
   call.lastAudio = 0
   call.lastInText = 0
   call.micPeak = 0
@@ -355,9 +357,27 @@ function receive (event) {
     publish()
   } else if (frame.type === 'task_done') {
     call.pending = call.pending.filter((id) => id !== frame.id)
+    call.waiting = call.waiting.filter((id) => id !== frame.id)
     if (frame.state && frame.state !== 'completed') {
       call.detail = 'Hermes could not finish that task (' + frame.state + ')'
     }
+    publish()
+  } else if (frame.type === 'task_needs_input') {
+    // A run parked on an approval is not "still working" — it is waiting for a human, and
+    // the difference is the one thing the user cannot hear while the model is quiet.
+    if (!call.waiting.includes(frame.id)) call.waiting = [...call.waiting, frame.id]
+    call.detail = frame.question || 'Hermes is asking you something'
+    publish()
+  } else if (frame.type === 'task_update') {
+    if (frame.action === 'stop') {
+      call.pending = call.pending.filter((id) => id !== frame.id)
+      call.waiting = call.waiting.filter((id) => id !== frame.id)
+    } else {
+      call.waiting = call.waiting.filter((id) => id !== frame.id)
+    }
+    publish()
+  } else if (frame.type === 'task_failed') {
+    call.detail = frame.detail || 'Hermes refused that'
     publish()
   } else if (frame.type === 'lane') {
     call.detail = 'Hermes work is unavailable: ' + (frame.detail || frame.status)
@@ -376,6 +396,7 @@ async function start (rest) {
   call.state = 'connecting'
   call.detail = ''
   call.pending = []
+  call.waiting = []
   call.level = 0
   call.speaking = false
   call.lastAudio = 0
@@ -447,17 +468,22 @@ function TalkControl ({ rest }) {
   const now = Date.now()
   const pending = call.pending
   const working = pending.length > 0
+  // A task parked on an approval is still "working" by the count, but saying so hides the
+  // one thing the user can act on — so the ask wins the label.
+  const waiting = call.waiting.length > 0
   const thinking = call.state === 'live' && !working && !call.speaking &&
     call.lastInText > 0 && now - call.lastInText < 20000
   const busy = working || thinking || call.state === 'connecting'
   const counted = working ? call.taskAt : (thinking ? call.lastInText : call.startedAt)
   const shownSeconds = working || thinking ? (now - counted) / 1000 : call.elapsed
   const label = call.state === 'connecting' ? 'Connecting'
-    : working ? (pending.length > 1 ? `Hermes is working · ${pending.length} tasks` : 'Hermes is working')
-      : thinking ? 'Thinking'
-        : call.speaking ? 'Speaking'
-          : call.muted ? 'Muted'
-            : call.detail || 'Listening'
+    : waiting ? (call.waiting.length > 1 ? `Hermes needs you · ${call.waiting.length} tasks`
+      : 'Hermes needs you')
+      : working ? (pending.length > 1 ? `Hermes is working · ${pending.length} tasks` : 'Hermes is working')
+        : thinking ? 'Thinking'
+          : call.speaking ? 'Speaking'
+            : call.muted ? 'Muted'
+              : call.detail || 'Listening'
 
   return h('div', { 'aria-live': 'polite', role: 'status', className: PILL },
     h('div', { className: DISC },

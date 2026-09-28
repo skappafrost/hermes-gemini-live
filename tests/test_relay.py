@@ -15,6 +15,7 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from hermes_gemini_live import agent_lane, relay
+from hermes_gemini_live import tools as tools_module
 from hermes_gemini_live.live_client import LiveError
 
 
@@ -189,8 +190,9 @@ async def test_a_server_goodbye_ends_the_call_as_its_own_reason(opened):
 async def test_a_tool_call_answers_with_a_receipt_and_starts_no_wait(opened, monkeypatch):
     started: list[tuple[str, object]] = []
 
-    def fake_start_task(prompt, on_finished, session_key=None, book=None, profile=None):
-        started.append((prompt, on_finished, profile))
+    def fake_start_task(prompt, on_finished, session_key=None, book=None, profile=None,
+                        task_id=None, on_needs_input=None):
+        started.append((prompt, on_finished, profile, task_id, on_needs_input))
         return "task-1"
 
     monkeypatch.setattr(relay.agent_lane, "start_task", fake_start_task)
@@ -201,10 +203,13 @@ async def test_a_tool_call_answers_with_a_receipt_and_starts_no_wait(opened, mon
     await relay.run_relay(browser)
 
     assert len(started) == 1
-    prompt, on_finished, profile = started[0]
+    prompt, on_finished, profile, task_id, on_needs_input = started[0]
     assert prompt.startswith("count the files")
     assert callable(on_finished)
     assert profile is None
+    # The receipt the model is handed is the id it must use later — one name per task.
+    assert task_id == "call_7"
+    assert callable(on_needs_input)
     assert live.responses and live.responses[0]["result"].startswith("WORK_STARTED call_7")
     assert {"type": "task_started", "id": "call_7",
             "prompt": "count the files in web/"} in browser.sent
@@ -237,7 +242,46 @@ async def test_the_delegate_tool_is_offered_when_the_lane_is_live(opened):
     opened(FakeLive(incoming=[]))
     await relay.run_relay(FakeBrowser([]))
     names = [entry["name"] for entry in opened.seen["tools"]]
-    assert names == ["hermes_task"]
+    assert names == [tools_module.DELEGATE_NAME, tools_module.BOARD_NAME,
+                     tools_module.UPDATE_NAME]
+
+
+@pytest.mark.asyncio
+async def test_reading_the_board_answers_from_memory_and_starts_nothing(opened, monkeypatch):
+    # The point of the board verb is that a second request about running work costs no
+    # second run, so this asserts the absence as much as the answer.
+    started = []
+    monkeypatch.setattr(relay.agent_lane, "start_task", lambda *a, **k: started.append(1))
+    live = opened(FakeLive(incoming=[]))
+    book = agent_lane.RunBook()
+    book.register("t1", "list downloads")
+    book.set_state("t1", "needs_input", question="It wants to run: rm -rf scratch")
+    await relay._handle_tool_call(
+        {"id": "c9", "name": tools_module.BOARD_NAME, "args": {}},
+        live, FakeBrowser([]), book, None, None, asyncio.get_running_loop())
+    assert started == []
+    assert live.responses[0]["result"].startswith("#t1 [needs_input]")
+    assert "rm -rf scratch" in live.responses[0]["result"]
+
+
+@pytest.mark.asyncio
+async def test_an_approval_answer_reaches_the_lane_with_the_request_it_belongs_to(
+        opened, monkeypatch):
+    sent = []
+    monkeypatch.setattr(relay.agent_lane, "approve",
+                        lambda run_id, choice, request_id, **k: sent.append(
+                            (run_id, choice, request_id)))
+    live = opened(FakeLive(incoming=[]))
+    book = agent_lane.RunBook()
+    book.register("t1", "clean the scratch dir")
+    book.attach_run("t1", "run_1")
+    book.set_state("t1", "needs_input", question="may I?", request_id="req_9")
+    browser = FakeBrowser([])
+    await relay._update_task("c10", {"task": "t1", "action": "approve", "answer": "yes"},
+                             live, browser, book, None, None)
+    assert sent == [("run_1", "once", "req_9")]
+    assert live.responses[0]["result"] == "UPDATE_DONE t1 approve."
+    assert book.pending() == ["t1"]
 
 
 @pytest.mark.asyncio
