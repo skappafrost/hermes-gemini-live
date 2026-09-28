@@ -27,20 +27,26 @@ Audio relays through Hermes' own backend, which holds the key.
 
 ## Install
 
-Clone into the plugins folder of the Hermes home you want it in, then enable it:
+One command, into the Hermes home your shell points at:
 
 ```bash
-# macOS/Linux: ~/.hermes  ·  Windows: %LOCALAPPDATA%\hermes
-cd ~/.hermes/plugins
-git clone https://github.com/skappafrost/hermes-gemini-live.git
-cd ~/.hermes && hermes plugins enable hermes-gemini-live
+hermes plugins install skappafrost/hermes-gemini-live
 ```
 
-Then add the key to **that home's** `.env` — Hermes does not read a `.env` from inside the
-plugin folder:
+It will say *"custom (unreviewed) source — not from the Hermes catalog"* until the catalog entry
+below is merged upstream; that warning is about review status, not about the code. Then add the
+key to **that home's** `.env` — Hermes does not read a `.env` from inside the plugin folder:
 
 ```bash
+# macOS/Linux ~/.hermes  ·  Windows %LOCALAPPDATA%\hermes
 echo 'GEMINI_API_KEY=your-key' >> ~/.hermes/.env
+```
+
+Installing by hand works too, and is what you want if you plan to edit the plugin:
+
+```bash
+cd ~/.hermes/plugins && git clone https://github.com/skappafrost/hermes-gemini-live.git
+cd ~/.hermes && hermes plugins enable hermes-gemini-live
 ```
 
 **Restart Hermes Desktop.** Two independent reasons, both real: plugin API routes are mounted
@@ -255,6 +261,29 @@ python -m pytest -q            # 86 passed
 
 The renderer path — a real microphone, a real speaker, real interruptions — is only provable by
 making a call. CI cannot cover it, and this README does not claim it does.
+
+## How this differs from other voice plugins
+
+The Hermes catalog already carries Gemini Live voice — notably **`gemini-live-bridge`**, which
+this README describes from its own catalog entry, not from a guess. It is the better pick if you
+want a *transcript-and-meters* experience: a status-bar minibar, model catalog, thinking level,
+session token meter and auto-redial through session resumption, and it is documented as having
+**no agent tools**.
+
+This plugin's bet is the opposite: a single control in the composer, and the voice model being
+**able to make Hermes do things** — files, terminals, the web, memory — while the conversation
+continues. That is where almost all of the work here went, and it is why the lane has a task
+board, an approval round-trip to the user's voice, and a measured table of which Live models
+actually delegate (they do not all). Choose on that axis:
+
+| You want | Pick |
+|---|---|
+| Transcript, token meter, model picker, reconnect | `gemini-live-bridge` |
+| "Add this to the repo, then tell me what changed" by voice | this plugin |
+| Both | nothing stops you — they are separate sockets, but each holds a microphone, so run one at a time |
+
+Chained voice modes in core (`hermes-talk`, `hermes-speech`, `deepgram-voice`, …) are a third
+thing again: STT → agent → TTS turns, not a duplex model.
 
 ## Publishing to the Hermes plugin catalog
 
