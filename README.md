@@ -1,5 +1,8 @@
 # hermes-gemini-live
 
+[![tests](https://github.com/skappafrost/hermes-gemini-live/actions/workflows/tests.yml/badge.svg)](https://github.com/skappafrost/hermes-gemini-live/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Full-duplex **Gemini Live** voice inside [Hermes Agent](https://github.com/NousResearch/hermes-agent)'s
 Desktop app, with real work delegated to Hermes while you keep talking.
 
