@@ -35,6 +35,26 @@ def test_probe_says_unauthorized_without_touching_the_network_when_no_key(monkey
     assert called == []
 
 
+def test_a_profile_refusal_names_the_env_to_fix(monkeypatch):
+    # A multiplexed gateway will not inherit the owner's key for /p/<profile>/, so the
+    # one string the user acts on has to carry which home's .env is empty.
+    monkeypatch.delenv("API_SERVER_KEY", raising=False)
+    monkeypatch.setattr(agent_lane.httpx, "get", lambda *a, **k: None)
+    assert "vex_agent" in agent_lane.probe(profile="vex_agent")[1]
+    assert "vex_agent" not in agent_lane.probe()[1]
+
+
+def test_a_profile_refusal_names_the_env_to_fix(monkeypatch):
+    # A multiplexed gateway will not inherit the owner's key for /p/<profile>/, so the
+    # one string the user acts on has to carry which home's .env is empty.
+    monkeypatch.delenv("API_SERVER_KEY", raising=False)
+    monkeypatch.setattr("hermes_gemini_live.config.serving_profile", lambda: "vex_agent")
+    monkeypatch.setattr(agent_lane.httpx, "get", lambda *a, **k: None)
+    status, detail = agent_lane.probe(profile="vex_agent")
+    assert status == agent_lane.STATUS_UNAUTHORIZED
+    assert "vex_agent" in detail and ".env" in detail
+
+
 def test_probe_refuses_a_server_that_cannot_take_runs(monkeypatch):
     monkeypatch.setenv("API_SERVER_KEY", "a-key")
     response = httpx.Response(200, json={"features": {"run_submission": False}})

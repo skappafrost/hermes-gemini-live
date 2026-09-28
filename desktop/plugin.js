@@ -236,6 +236,7 @@ function TalkControl ({ rest }) {
   const stopCapture = useRef(null)
   const micPeak = useRef(0)
   const lastAudio = useRef(0)
+  const lastInText = useRef(0)
   const startedAt = useRef(0)
   const taskAt = useRef(0)
   const tuningRef = useRef(DEFAULT_TUNING)
@@ -301,6 +302,7 @@ function TalkControl ({ rest }) {
     setPending([])
     taskAt.current = 0
     lastAudio.current = 0
+    lastInText.current = 0
     startedAt.current = Date.now()
     player.current = player.current || createPlayer()
     let url
@@ -334,6 +336,10 @@ function TalkControl ({ rest }) {
       } else if (frame.type === 'speech_started') {
         player.current?.flush()
         lastAudio.current = 0
+      } else if (frame.type === 'in_text' && frame.text) {
+        // The user's own words are the only honest start of a "thinking" window: an
+        // extended-thinking model is silent while it works, and silence alone reads dead.
+        lastInText.current = Date.now()
       } else if (frame.type === 'task_started') {
         if (!taskAt.current) taskAt.current = Date.now()
         setPending((ids) => (ids.includes(frame.id) ? ids : [...ids, frame.id]))
@@ -371,6 +377,7 @@ function TalkControl ({ rest }) {
     stopCapture.current = null
     player.current?.flush()
     lastAudio.current = 0
+    lastInText.current = 0
     micPeak.current = 0
     taskAt.current = 0
     setLevel(0)
@@ -392,15 +399,25 @@ function TalkControl ({ rest }) {
     }, h(icons.Mic, { className: icons.iconSize.sm }))
   }
 
-  // A Hermes run takes tens of seconds, so "working" must be loud: the label, a spinning
-  // disc, a count and its own clock all move, and none of them is the model's voice.
+  // A Hermes run takes tens of seconds and an extended-thinking model goes silent while
+  // it works, so neither gap may look like a frozen app. Each gets its own label, clock
+  // and disc, all built from chrome the app already uses: a spinning Loader2 to mean
+  // "not idle", and the meter's own pulse (core's `animate-pulse opacity-45`) to mean
+  // "alive, nothing coming out".
+  const now = Date.now()
   const working = pending.length > 0
-  const busy = working || state === 'connecting'
-  const taskElapsed = working && taskAt.current ? (Date.now() - taskAt.current) / 1000 : 0
+  const thinking = state === 'live' && !working && !speaking &&
+    lastInText.current > 0 && now - lastInText.current < 20000
+  const busy = working || thinking || state === 'connecting'
+  const counted = working ? taskAt.current : (thinking ? lastInText.current : startedAt.current)
+  const shownSeconds = working || thinking
+    ? (now - counted) / 1000
+    : elapsed
   const label = state === 'connecting' ? 'Connecting'
     : working ? (pending.length > 1 ? `Hermes is working · ${pending.length} tasks` : 'Hermes is working')
-      : speaking ? 'Speaking'
-        : detail || 'Listening'
+      : thinking ? 'Thinking'
+        : speaking ? 'Speaking'
+          : detail || 'Listening'
 
   return h('div', { 'aria-live': 'polite', role: 'status', className: PILL },
     h('div', { className: DISC },
@@ -410,8 +427,8 @@ function TalkControl ({ rest }) {
     h('div', { className: 'flex min-w-0 flex-1 items-center gap-2' },
       h('span', { className: 'truncate font-medium text-foreground/85' }, label),
       h('span', { 'aria-hidden': 'true', className: 'font-mono text-[0.6875rem] text-muted-foreground/85' },
-        formatElapsed(working ? taskElapsed : elapsed))),
-    h(VoiceLevelBars, { active: true, level }),
+        formatElapsed(shownSeconds))),
+    h(VoiceLevelBars, { active: !thinking, level }),
     h('button', {
       type: 'button',
       'aria-label': 'Stop Gemini Live call',

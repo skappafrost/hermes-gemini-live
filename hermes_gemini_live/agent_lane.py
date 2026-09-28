@@ -128,9 +128,19 @@ def headers(session_key: str | None = None, profile: str | None = None) -> dict:
 
 
 def probe(session_key: str | None = None, profile: str | None = None) -> tuple[str, str]:
-    """(status, detail) for whether this run lane can be offered to the model."""
+    """(status, detail) for whether this run lane can be offered to the model.
+
+    The refusal names the home to fix, because a multiplexed gateway authorises
+    ``/p/<profile>/`` with that profile's own key and deliberately does not inherit the
+    owner's (``api_server.py:1530-1545``) — so "set API_SERVER_KEY" without a location
+    sends people to the wrong ``.env``.
+    """
     if not key(profile):
-        return STATUS_UNAUTHORIZED, "no API_SERVER_KEY configured"
+        return STATUS_UNAUTHORIZED, (
+            "no API_SERVER_KEY configured"
+            if not profile
+            else f"no API_SERVER_KEY for profile '{profile}' — set it in that profile's .env"
+        )
     try:
         response = httpx.get(f"{base_url(profile)}{CAPABILITIES_PATH}",
                              headers=headers(session_key, profile), timeout=8.0)
