@@ -94,21 +94,23 @@ def test_status_reports_the_reason_when_no_key():
 def test_serving_profile_comes_from_the_home_not_from_a_client(tmp_path, monkeypatch):
     # An unprefixed run resumes in the DEFAULT profile's store, so guessing this wrong
     # writes one profile's memories into another's.
-    import hermes_constants
-    nested = tmp_path / "profiles" / "vex_agent"
+    hermes_constants = pytest.importorskip("hermes_constants",
+        reason="needs a Hermes checkout on PYTHONPATH")
+    nested = tmp_path / "profiles" / "alpha_agent"
     nested.mkdir(parents=True)
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: nested)
-    assert config.serving_profile() == "vex_agent"
+    assert config.serving_profile() == "alpha_agent"
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     assert config.serving_profile() is None
 
 
 def test_serving_profile_can_be_pinned_and_default_is_unprefixed(tmp_path, monkeypatch):
-    import hermes_constants
+    hermes_constants = pytest.importorskip("hermes_constants",
+        reason="needs a Hermes checkout on PYTHONPATH")
     monkeypatch.setattr(hermes_constants, "get_hermes_home",
-                        lambda: tmp_path / "profiles" / "vex_agent")
-    monkeypatch.setenv("GEMINI_LIVE_API_SERVER_PROFILE", "zen_agent")
-    assert config.serving_profile() == "zen_agent"
+                        lambda: tmp_path / "profiles" / "alpha_agent")
+    monkeypatch.setenv("GEMINI_LIVE_API_SERVER_PROFILE", "beta_agent")
+    assert config.serving_profile() == "beta_agent"
     monkeypatch.setenv("GEMINI_LIVE_API_SERVER_PROFILE", "default")
     assert config.serving_profile() is None
 

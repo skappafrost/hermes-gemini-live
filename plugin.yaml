@@ -2,13 +2,18 @@ name: hermes-gemini-live
 version: 0.1.0
 manifest_version: 1
 kind: standalone
-description: "Full-duplex Gemini Live voice for Hermes Desktop: server-relayed audio (the key never leaves the backend) and one delegate tool that hands real work to Hermes."
+description: "Full-duplex Gemini Live voice inside Hermes Desktop: audio relays through the
+  backend so the key never reaches the renderer, and three delegate verbs (start, read the
+  board, answer or redirect) that hand real work to Hermes while you keep talking."
 author: "Ha Trung"
 license: MIT
+homepage: "https://github.com/skappafrost/hermes-gemini-live"
+tags: ["voice", "gemini", "live", "desktop", "speech"]
 provides_tools: []
 provides_hooks: []
 
-# Deliberately no `python_dependencies` and no pyproject.toml: websockets/aiohttp/httpx
-# already ship in the runtime venv, and a member-less package keeps this plugin out of the
-# uv workspace entirely — immune to the "two workspace members are both named X" failure
-# that breaks any buildable plugin enabled in more than one profile.
+# Deliberately no `python_dependencies` and no pyproject.toml. websockets, aiohttp and httpx
+# already ship in the runtime venv, and a member-less package stays out of the uv workspace
+# entirely — which is what lets one clone be enabled in five profiles without tripping the
+# "two workspace members are both named X" failure that breaks any *buildable* plugin.
+# Dev/CI installs are documented in README.md and do not need a pyproject either.

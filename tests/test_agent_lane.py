@@ -39,20 +39,11 @@ def test_a_profile_refusal_names_the_env_to_fix(monkeypatch):
     # A multiplexed gateway will not inherit the owner's key for /p/<profile>/, so the
     # one string the user acts on has to carry which home's .env is empty.
     monkeypatch.delenv("API_SERVER_KEY", raising=False)
+    monkeypatch.setattr("hermes_gemini_live.config.serving_profile", lambda: "alpha_agent")
     monkeypatch.setattr(agent_lane.httpx, "get", lambda *a, **k: None)
-    assert "vex_agent" in agent_lane.probe(profile="vex_agent")[1]
-    assert "vex_agent" not in agent_lane.probe()[1]
-
-
-def test_a_profile_refusal_names_the_env_to_fix(monkeypatch):
-    # A multiplexed gateway will not inherit the owner's key for /p/<profile>/, so the
-    # one string the user acts on has to carry which home's .env is empty.
-    monkeypatch.delenv("API_SERVER_KEY", raising=False)
-    monkeypatch.setattr("hermes_gemini_live.config.serving_profile", lambda: "vex_agent")
-    monkeypatch.setattr(agent_lane.httpx, "get", lambda *a, **k: None)
-    status, detail = agent_lane.probe(profile="vex_agent")
+    status, detail = agent_lane.probe(profile="alpha_agent")
     assert status == agent_lane.STATUS_UNAUTHORIZED
-    assert "vex_agent" in detail and ".env" in detail
+    assert "alpha_agent" in detail and ".env" in detail
 
 
 def test_probe_refuses_a_server_that_cannot_take_runs(monkeypatch):
@@ -132,7 +123,7 @@ def test_a_named_profile_is_routed_to_its_own_ingress(monkeypatch):
     monkeypatch.delenv("GEMINI_LIVE_API_SERVER_URL", raising=False)
     assert agent_lane.base_url() == agent_lane.DEFAULT_API_SERVER_URL
     assert agent_lane.base_url("default") == agent_lane.DEFAULT_API_SERVER_URL
-    assert agent_lane.base_url("vex_agent") == "http://127.0.0.1:8642/p/vex_agent"
+    assert agent_lane.base_url("alpha_agent") == "http://127.0.0.1:8642/p/alpha_agent"
     assert agent_lane.base_url("a b") == "http://127.0.0.1:8642/p/a%20b"
 
 
@@ -149,10 +140,10 @@ def test_submit_and_poll_carry_the_profile_ingress(monkeypatch):
 
     monkeypatch.setattr(agent_lane.httpx, "post", post)
     monkeypatch.setattr(agent_lane.httpx, "get", get)
-    run_id = agent_lane.submit("task", profile="vex_agent")
-    agent_lane.await_result(run_id, profile="vex_agent")
-    assert urls == ["http://127.0.0.1:8642/p/vex_agent/v1/runs",
-                    "http://127.0.0.1:8642/p/vex_agent/v1/runs/run_9"]
+    run_id = agent_lane.submit("task", profile="alpha_agent")
+    agent_lane.await_result(run_id, profile="alpha_agent")
+    assert urls == ["http://127.0.0.1:8642/p/alpha_agent/v1/runs",
+                    "http://127.0.0.1:8642/p/alpha_agent/v1/runs/run_9"]
 
 
 def test_a_foreign_profile_reads_its_own_key_not_the_launch_env(monkeypatch):
@@ -173,13 +164,13 @@ def test_a_foreign_profile_reads_its_own_key_not_the_launch_env(monkeypatch):
 
     monkeypatch.setenv("API_SERVER_KEY", "launch-key")
     monkeypatch.setattr(agent_lane, "_foreign_profile_scope", fake_scope)
-    monkeypatch.setattr("hermes_gemini_live.config.serving_profile", lambda: "vex_agent")
+    monkeypatch.setattr("hermes_gemini_live.config.serving_profile", lambda: "alpha_agent")
 
     assert agent_lane.key() == "launch-key"
-    assert agent_lane.key("zen_agent") == "key-of-zen_agent"
-    assert bound == ["zen_agent"]
-    assert agent_lane.key("vex_agent") == "launch-key"
-    assert bound == ["zen_agent"]
+    assert agent_lane.key("beta_agent") == "key-of-beta_agent"
+    assert bound == ["beta_agent"]
+    assert agent_lane.key("alpha_agent") == "launch-key"
+    assert bound == ["beta_agent"]
 
 
 def test_the_three_verbs_are_offered_and_their_schema_types_are_uppercase():
