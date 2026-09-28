@@ -6,7 +6,7 @@
 // Audio leaves this window as 16 kHz s16le frames over a sibling WebSocket; the Gemini
 // key is never sent here and never read here. The relay owns it.
 import { icons, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
-import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement as h, useEffect, useState } from 'react'
 
 const RELAY_PATH = '/api/plugins/hermes-gemini-live/relay'
 const SEND_RATE = 16000
@@ -223,177 +223,206 @@ function VoiceLevelBars ({ level, active }) {
     }))
 }
 
-function TalkControl ({ rest }) {
-  const [state, setState] = useState('idle')
-  const [detail, setDetail] = useState('')
-  const [level, setLevel] = useState(0)
-  const [elapsed, setElapsed] = useState(0)
-  const [speaking, setSpeaking] = useState(false)
-  const [pending, setPending] = useState([])
-  const [status, setStatus] = useState(null)
-  const socket = useRef(null)
-  const player = useRef(null)
-  const stopCapture = useRef(null)
-  const micPeak = useRef(0)
-  const lastAudio = useRef(0)
-  const lastInText = useRef(0)
-  const startedAt = useRef(0)
-  const taskAt = useRef(0)
-  const tuningRef = useRef(DEFAULT_TUNING)
+/**
+ * The call is owned at module scope, not by the component. A `composer.actions` row is
+ * remounted whenever the chat route changes — opening a session, switching pane — and a
+ * call that dies with its row dies while the user is still talking, so the row only
+ * subscribes and renders. Nothing here tears the socket down except Stop, a dropped
+ * relay, or a frame that says the call failed.
+ */
+const call = {
+  state: 'idle', detail: '', level: 0, elapsed: 0, speaking: false, pending: [], status: null,
+  socket: null, player: null, stopCapture: null,
+  lastAudio: 0, lastInText: 0, startedAt: 0, taskAt: 0, micPeak: 0,
+  tuning: DEFAULT_TUNING, raf: 0, listeners: new Set()
+}
 
-  const tuning = { ...DEFAULT_TUNING, ...((status && status.audio) || {}) }
-  tuningRef.current = tuning
+function publish () {
+  for (const listener of call.listeners) listener()
+}
 
+function useCall () {
+  const [, rerender] = useState(0)
   useEffect(() => {
-    let alive = true
-    Promise.resolve(rest('/status'))
-      .then((value) => { if (alive) setStatus(value) })
-      .catch((error) => {
-        if (!alive) return
-        // Keep the backend's own words: "404 Plugin not found" means this home has the
-        // plugin disabled, which is a different fix from a missing key.
-        setStatus({
-          ok: false,
-          detail: 'backend: ' + (error && error.message ? error.message : String(error))
-        })
-      })
-    return () => { alive = false }
-  }, [rest])
+    const listener = () => rerender((n) => n + 1)
+    call.listeners.add(listener)
+    return () => call.listeners.delete(listener)
+  }, [])
+  return call
+}
 
-  // One rAF loop drives meter, speaking and the clock while a call is up — and stops with
-  // it, so an idle plugin costs the composer nothing.
-  useEffect(() => {
-    if (state === 'idle') return
-    let raf = 0
-    const tick = () => {
-      const now = Date.now()
-      const played = player.current ? player.current.level() : 0
-      const isSpeaking = now - lastAudio.current < 400 || played > 0.02
-      setSpeaking(isSpeaking)
-      setLevel(isSpeaking ? played : micPeak.current)
-      setElapsed((now - startedAt.current) / 1000)
-      raf = window.requestAnimationFrame(tick)
+const message = (error) => (error && error.message ? error.message : String(error))
+
+// One loop drives meter, speaking and the clock for the life of the call — not of the row.
+function beginMeter () {
+  if (call.raf) return
+  const tick = () => {
+    const now = Date.now()
+    const played = call.player ? call.player.level() : 0
+    call.speaking = now - call.lastAudio < 400 || played > 0.02
+    call.level = call.speaking ? played : call.micPeak
+    call.elapsed = (now - call.startedAt) / 1000
+    publish()
+    call.raf = window.requestAnimationFrame(tick)
+  }
+  call.raf = window.requestAnimationFrame(tick)
+}
+
+/** Stop everything the call holds. `note` replaces the visible reason; omit it to keep. */
+function tearDown (note) {
+  if (call.raf) {
+    window.cancelAnimationFrame(call.raf)
+    call.raf = 0
+  }
+  const ws = call.socket
+  call.socket = null
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'close' }))
+    ws.close()
+  }
+  if (call.stopCapture) {
+    call.stopCapture()
+    call.stopCapture = null
+  }
+  call.player?.flush()
+  call.state = 'idle'
+  call.level = 0
+  call.speaking = false
+  call.pending = []
+  call.lastAudio = 0
+  call.lastInText = 0
+  call.micPeak = 0
+  call.taskAt = 0
+  if (note !== undefined) call.detail = note
+  publish()
+}
+
+async function loadStatus (rest) {
+  try {
+    call.status = await rest('/status')
+  } catch (error) {
+    // Keep the backend's own words: "404 Plugin not found" means this home has the
+    // plugin disabled, which is a different fix from a missing key.
+    call.status = { ok: false, detail: 'backend: ' + message(error) }
+  }
+  call.tuning = { ...DEFAULT_TUNING, ...((call.status && call.status.audio) || {}) }
+  publish()
+}
+
+function appendChunk (bytes, peak) {
+  call.micPeak = peak
+  const tuning = call.tuning
+  // Half-duplex: when a loudspeaker beats the canceller, the model's own reply arrives
+  // at the mic and Live reads it as a listener interrupting. Muting the uplink while it
+  // speaks costs talk-over interruption and buys back a call that actually finishes.
+  if (tuning.halfDuplex && Date.now() - call.lastAudio < 600) return
+  const ws = call.socket
+  if (!ws || ws.readyState !== WebSocket.OPEN) return
+  ws.send(JSON.stringify({ type: 'audio', data: toBase64(bytes) }))
+}
+
+function receive (event) {
+  let frame
+  try {
+    frame = JSON.parse(event.data)
+  } catch {
+    return
+  }
+  if (frame.type === 'audio') {
+    call.lastAudio = Date.now()
+    call.player?.play(fromBase64(frame.data))
+  } else if (frame.type === 'speech_started') {
+    call.player?.flush()
+    call.lastAudio = 0
+  } else if (frame.type === 'in_text' && frame.text) {
+    // The user's own words are the only honest start of a "thinking" window: an
+    // extended-thinking model is silent while it works, and silence alone reads dead.
+    call.lastInText = Date.now()
+  } else if (frame.type === 'task_started') {
+    if (!call.taskAt) call.taskAt = Date.now()
+    if (!call.pending.includes(frame.id)) call.pending = [...call.pending, frame.id]
+    publish()
+  } else if (frame.type === 'task_done') {
+    call.pending = call.pending.filter((id) => id !== frame.id)
+    if (frame.state && frame.state !== 'completed') {
+      call.detail = 'Hermes could not finish that task (' + frame.state + ')'
     }
-    raf = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(raf)
-  }, [state])
+    publish()
+  } else if (frame.type === 'lane') {
+    call.detail = 'Hermes work is unavailable: ' + (frame.detail || frame.status)
+    publish()
+  } else if (frame.type === 'go_away') {
+    call.detail = 'Gemini is ending this session' +
+      (frame.timeLeft ? ' (' + frame.timeLeft + ')' : '') + ' — press Start to go on'
+    publish()
+  } else if (frame.type === 'error') {
+    tearDown(String(frame.detail || 'the voice call failed'))
+  }
+}
 
-  useEffect(() => () => {
-    socket.current?.close()
-    stopCapture.current?.()
-    player.current?.close()
-  }, [])
-
-  const append = useCallback((bytes, peak) => {
-    micPeak.current = peak
-    const active = tuningRef.current
-    // Half-duplex: when a loudspeaker beats the canceller, the model's own reply arrives
-    // at the mic and Live reads it as a listener interrupting. Muting the uplink while it
-    // speaks costs talk-over interruption and buys back a call that actually finishes.
-    if (active.halfDuplex && Date.now() - lastAudio.current < 600) return
-    if (!socket.current || socket.current.readyState !== WebSocket.OPEN) return
-    socket.current.send(JSON.stringify({ type: 'audio', data: toBase64(bytes) }))
-  }, [])
-
-  const speak = useCallback(async () => {
-    setState('connecting')
-    setDetail('')
-    setSpeaking(false)
-    setPending([])
-    taskAt.current = 0
-    lastAudio.current = 0
-    lastInText.current = 0
-    startedAt.current = Date.now()
-    player.current = player.current || createPlayer()
-    let url
+async function start (rest) {
+  if (call.state !== 'idle') return
+  call.state = 'connecting'
+  call.detail = ''
+  call.pending = []
+  call.level = 0
+  call.speaking = false
+  call.lastAudio = 0
+  call.lastInText = 0
+  call.taskAt = 0
+  call.startedAt = Date.now()
+  beginMeter()
+  publish()
+  void loadStatus(rest)
+  call.player = call.player || createPlayer()
+  let url
+  try {
+    url = await resolveSiblingWsUrl({}, RELAY_PATH)
+  } catch (error) {
+    tearDown(message(error))
+    return
+  }
+  const ws = new WebSocket(url)
+  call.socket = ws
+  ws.onopen = async () => {
+    call.state = 'live'
+    publish()
     try {
-      url = await resolveSiblingWsUrl({}, RELAY_PATH)
+      call.stopCapture = await startCapture(appendChunk, call.tuning)
     } catch (error) {
-      setState('idle')
-      setDetail(error && error.message ? error.message : String(error))
-      return
+      call.detail = 'microphone unavailable: ' + message(error)
+      publish()
     }
-    const ws = new WebSocket(url)
-    socket.current = ws
-    ws.onopen = async () => {
-      setState('live')
-      try {
-        stopCapture.current = await startCapture(append, tuningRef.current)
-      } catch (error) {
-        setDetail('microphone unavailable: ' + (error && error.message ? error.message : String(error)))
-      }
-    }
-    ws.onmessage = (event) => {
-      let frame
-      try {
-        frame = JSON.parse(event.data)
-      } catch {
-        return
-      }
-      if (frame.type === 'audio') {
-        lastAudio.current = Date.now()
-        player.current?.play(fromBase64(frame.data))
-      } else if (frame.type === 'speech_started') {
-        player.current?.flush()
-        lastAudio.current = 0
-      } else if (frame.type === 'in_text' && frame.text) {
-        // The user's own words are the only honest start of a "thinking" window: an
-        // extended-thinking model is silent while it works, and silence alone reads dead.
-        lastInText.current = Date.now()
-      } else if (frame.type === 'task_started') {
-        if (!taskAt.current) taskAt.current = Date.now()
-        setPending((ids) => (ids.includes(frame.id) ? ids : [...ids, frame.id]))
-      } else if (frame.type === 'task_done') {
-        setPending((ids) => ids.filter((id) => id !== frame.id))
-        if (frame.state && frame.state !== 'completed') {
-          setDetail('Hermes could not finish that task (' + frame.state + ')')
-        }
-      } else if (frame.type === 'lane') {
-        setDetail('Hermes work is unavailable: ' + (frame.detail || frame.status))
-      } else if (frame.type === 'go_away') {
-        setDetail('Gemini is ending this session' +
-          (frame.timeLeft ? ' (' + frame.timeLeft + ')' : '') + ' — press Start to go on')
-      } else if (frame.type === 'error') {
-        setState('idle')
-        setDetail(String(frame.detail || 'the voice call failed'))
-        stopCapture.current?.()
-      }
-    }
-    ws.onclose = () => {
-      stopCapture.current?.()
-      stopCapture.current = null
-      setState('idle')
-    }
-    ws.onerror = () => setDetail('the relay socket failed')
-  }, [append])
+  }
+  ws.onmessage = receive
+  ws.onclose = () => {
+    // Only the live socket matters: Stop replaces it before its own close arrives. Keep
+    // the frame that caused it (goAway, an error) when the server told us one.
+    if (call.socket !== ws) return
+    tearDown(call.detail || 'the voice call dropped')
+  }
+  ws.onerror = () => {
+    call.detail = 'the relay socket failed'
+    publish()
+  }
+}
 
-  const stop = useCallback(() => {
-    if (socket.current && socket.current.readyState === WebSocket.OPEN) {
-      socket.current.send(JSON.stringify({ type: 'close' }))
-      socket.current.close()
-    }
-    socket.current = null
-    stopCapture.current?.()
-    stopCapture.current = null
-    player.current?.flush()
-    lastAudio.current = 0
-    lastInText.current = 0
-    micPeak.current = 0
-    taskAt.current = 0
-    setLevel(0)
-    setPending([])
-    setState('idle')
-  }, [])
-
+function TalkControl ({ rest }) {
+  useCall()
+  const status = call.status
   const blocked = !!(status && !status.ok)
 
-  if (state === 'idle') {
+  useEffect(() => {
+    if (!status) void loadStatus(rest)
+  }, [rest, status])
+
+  if (call.state === 'idle') {
     return h('button', {
       type: 'button',
-      title: detail || (blocked && status ? status.detail : 'Start a Gemini Live call'),
+      title: call.detail || (blocked && status ? status.detail : 'Start a Gemini Live call'),
       'aria-label': 'Start Gemini Live call',
       disabled: blocked,
-      onClick: () => void speak(),
+      onClick: () => void start(rest),
       className: 'inline-flex size-7 shrink-0 items-center justify-center rounded-full ' +
         'text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50'
     }, h(icons.Mic, { className: icons.iconSize.sm }))
@@ -405,34 +434,33 @@ function TalkControl ({ rest }) {
   // "not idle", and the meter's own pulse (core's `animate-pulse opacity-45`) to mean
   // "alive, nothing coming out".
   const now = Date.now()
+  const pending = call.pending
   const working = pending.length > 0
-  const thinking = state === 'live' && !working && !speaking &&
-    lastInText.current > 0 && now - lastInText.current < 20000
-  const busy = working || thinking || state === 'connecting'
-  const counted = working ? taskAt.current : (thinking ? lastInText.current : startedAt.current)
-  const shownSeconds = working || thinking
-    ? (now - counted) / 1000
-    : elapsed
-  const label = state === 'connecting' ? 'Connecting'
+  const thinking = call.state === 'live' && !working && !call.speaking &&
+    call.lastInText > 0 && now - call.lastInText < 20000
+  const busy = working || thinking || call.state === 'connecting'
+  const counted = working ? call.taskAt : (thinking ? call.lastInText : call.startedAt)
+  const shownSeconds = working || thinking ? (now - counted) / 1000 : call.elapsed
+  const label = call.state === 'connecting' ? 'Connecting'
     : working ? (pending.length > 1 ? `Hermes is working · ${pending.length} tasks` : 'Hermes is working')
       : thinking ? 'Thinking'
-        : speaking ? 'Speaking'
-          : detail || 'Listening'
+        : call.speaking ? 'Speaking'
+          : call.detail || 'Listening'
 
   return h('div', { 'aria-live': 'polite', role: 'status', className: PILL },
     h('div', { className: DISC },
       busy
         ? h(icons.Loader2, { className: ['animate-spin', icons.iconSize.xs].join(' ') })
-        : h(speaking ? icons.Volume2 : icons.Mic, { className: icons.iconSize.xs })),
+        : h(call.speaking ? icons.Volume2 : icons.Mic, { className: icons.iconSize.xs })),
     h('div', { className: 'flex min-w-0 flex-1 items-center gap-2' },
       h('span', { className: 'truncate font-medium text-foreground/85' }, label),
       h('span', { 'aria-hidden': 'true', className: 'font-mono text-[0.6875rem] text-muted-foreground/85' },
         formatElapsed(shownSeconds))),
-    h(VoiceLevelBars, { active: !thinking, level }),
+    h(VoiceLevelBars, { active: !thinking, level: call.level }),
     h('button', {
       type: 'button',
       'aria-label': 'Stop Gemini Live call',
-      onClick: stop,
+      onClick: () => tearDown(),
       className: 'inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[0.6875rem] ' +
         'text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
     }, h(icons.VolumeX, { className: icons.iconSize.xs }), 'Stop'))
