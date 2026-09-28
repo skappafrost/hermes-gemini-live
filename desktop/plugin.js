@@ -194,12 +194,12 @@ function createPlayer () {
 
 /**
  * Chrome copied from core's own voice surfaces
- * (`apps/desktop/src/app/chat/composer/voice-activity.tsx`): the same pill, the same
- * five-bar meter with weights [0.5, 0.78, 1, 0.78, 0.5], the same mono `m:ss` clock. A
- * plugin voice lane should be indistinguishable from the app's own one.
+ * (`apps/desktop/src/app/chat/composer/voice-activity.tsx`): the same five-bar meter with
+ * weights [0.5, 0.78, 1, 0.78, 0.5], the same mono `m:ss` clock, the same primary-tinted
+ * disc. The row itself keeps core's geometry but no fill of its own — it sits on the
+ * composer, so a second box inside it reads as a panel rather than as the app's voice lane.
  */
-const PILL = 'flex h-8 items-center gap-2 rounded-xl border border-border/55 bg-muted/55 ' +
-  'px-2.5 text-xs text-muted-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] backdrop-blur-sm'
+const PILL = 'flex h-8 items-center gap-2 px-1 text-xs text-muted-foreground'
 const DISC = 'flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary'
 const BAR_WEIGHTS = [0.5, 0.78, 1, 0.78, 0.5]
 
