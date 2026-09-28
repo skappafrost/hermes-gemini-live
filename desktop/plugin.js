@@ -232,6 +232,7 @@ function VoiceLevelBars ({ level, active }) {
  */
 const call = {
   state: 'idle', detail: '', level: 0, elapsed: 0, speaking: false, pending: [], status: null,
+  muted: false,
   socket: null, player: null, stopCapture: null,
   lastAudio: 0, lastInText: 0, startedAt: 0, taskAt: 0, micPeak: 0,
   tuning: DEFAULT_TUNING, raf: 0, listeners: new Set()
@@ -293,7 +294,13 @@ function tearDown (note) {
   call.lastInText = 0
   call.micPeak = 0
   call.taskAt = 0
+  call.muted = false
   if (note !== undefined) call.detail = note
+  publish()
+}
+
+function toggleMute () {
+  call.muted = !call.muted
   publish()
 }
 
@@ -310,6 +317,10 @@ async function loadStatus (rest) {
 }
 
 function appendChunk (bytes, peak) {
+  // Mute drops the frame at the last step before the socket, so the Live session, its
+  // context and any run in flight all stay alive — the model just stops hearing the room.
+  // There is no wire-level equivalent: pushToTalk, serverVad and activityEnd all close 1007.
+  if (call.muted) return
   call.micPeak = peak
   const tuning = call.tuning
   // Half-duplex: when a loudspeaker beats the canceller, the model's own reply arrives
@@ -445,18 +456,32 @@ function TalkControl ({ rest }) {
     : working ? (pending.length > 1 ? `Hermes is working · ${pending.length} tasks` : 'Hermes is working')
       : thinking ? 'Thinking'
         : call.speaking ? 'Speaking'
-          : call.detail || 'Listening'
+          : call.muted ? 'Muted'
+            : call.detail || 'Listening'
 
   return h('div', { 'aria-live': 'polite', role: 'status', className: PILL },
     h('div', { className: DISC },
       busy
         ? h(icons.Loader2, { className: ['animate-spin', icons.iconSize.xs].join(' ') })
-        : h(call.speaking ? icons.Volume2 : icons.Mic, { className: icons.iconSize.xs })),
+        : h(call.muted ? icons.MicOff : (call.speaking ? icons.Volume2 : icons.Mic),
+          { className: icons.iconSize.xs })),
     h('div', { className: 'flex min-w-0 flex-1 items-center gap-2' },
       h('span', { className: 'truncate font-medium text-foreground/85' }, label),
       h('span', { 'aria-hidden': 'true', className: 'font-mono text-[0.6875rem] text-muted-foreground/85' },
         formatElapsed(shownSeconds))),
     h(VoiceLevelBars, { active: !thinking, level: call.level }),
+    h('button', {
+      type: 'button',
+      'aria-label': call.muted ? 'Unmute the microphone' : 'Mute the microphone',
+      'aria-pressed': call.muted,
+      title: call.muted
+        ? 'The model still hears nothing; tasks it started keep running'
+        : 'Stop hearing the room without hanging up',
+      onClick: toggleMute,
+      className: 'inline-flex size-6 shrink-0 items-center justify-center rounded-full ' +
+        (call.muted ? 'bg-muted text-foreground' : 'text-muted-foreground') +
+        ' transition-colors hover:bg-muted hover:text-foreground'
+    }, h(call.muted ? icons.MicOff : icons.Mic, { className: icons.iconSize.xs })),
     h('button', {
       type: 'button',
       'aria-label': 'Stop Gemini Live call',
