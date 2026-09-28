@@ -60,6 +60,16 @@ def test_thinking_level_only_applies_to_extended_thinking():
     assert config.thinking_level("gemini-3.8-live-extended-thinking") in config.THINKING_LEVELS
 
 
+def test_tool_calling_is_withheld_from_the_id_proven_silent():
+    # Each half of this assertion is a measured answer to "ask it the current time in
+    # Tokyo and never guess": the True ids returned a toolCall, the False one spoke
+    # audio instead at both thinking levels.
+    for model_id in ("gemini-3.8-live", "gemini-3.1-flash-live-preview",
+                     "gemini-2.5-flash-native-audio-latest"):
+        assert config.supports_tool_calling(model_id) is True
+    assert config.supports_tool_calling("gemini-3.8-live-extended-thinking") is False
+
+
 def test_unsupported_thinking_level_refuses(monkeypatch):
     # The endpoint itself rejects these two ("...not supported for this model" /
     # "Invalid value"), so the plugin must not put them on the wire.

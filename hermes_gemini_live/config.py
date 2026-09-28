@@ -13,9 +13,18 @@ ENV_PREFIX = "GEMINI_LIVE_"
 #: Proven against the live endpoint by the spike: setup accepted, audio returned at
 #: audio/pcm;rate=24000. ``...-extended-thinking`` additionally REQUIRES a thinking
 #: level ("Thinking level must be specified for this model") and accepts high|low.
-DEFAULT_MODEL = "gemini-3.8-live-extended-thinking"
+DEFAULT_MODEL = "gemini-3.8-live"
 THINKING_LEVELS = ("high", "low")
 DEFAULT_THINKING_LEVEL = "high"
+
+#: Model-id fragments that accept a functionDeclarations setup and then never answer it.
+#: Measured 2026-09-28 on this key: asked a question it cannot know ("current time in
+#: Tokyo", told not to guess), ``gemini-3.8-live``, ``gemini-3.1-flash-live-preview`` and
+#: ``gemini-2.5-flash-native-audio-latest`` each returned a toolCall, while
+#: ``gemini-3.8-live-extended-thinking`` returned audio only — at thinkingLevel high AND
+#: low. ``toolConfig`` is not a legal setup field (close 1007), so nothing on the wire can
+#: coax it. The delegate is therefore withheld from these ids rather than offered unused.
+NO_TOOL_CALLING = ("extended-thinking",)
 
 #: Google's Live voice list. Case-sensitive on the wire, so an unknown or
 #: case-folded name refuses instead of sending a value the API may reject.
@@ -168,6 +177,16 @@ def thinking_level(model_id: str) -> str | None:
     return raw
 
 
+def supports_tool_calling(model_id: str) -> bool:
+    """Whether this model can be trusted to answer a declaration with a toolCall.
+
+    Keyed on the ids the probe covered; an unprobed id reads as able, because the
+    declarations are what make the voice lane useful and the probe says the silent ones
+    are the exception.
+    """
+    return not any(part in model_id for part in NO_TOOL_CALLING)
+
+
 def instructions() -> str:
     extra = (os.environ.get(ENV_PREFIX + "INSTRUCTIONS") or "").strip()
     return f"{DEFAULT_INSTRUCTIONS} {extra}".strip() if extra else DEFAULT_INSTRUCTIONS
@@ -232,6 +251,7 @@ def status_dict() -> dict:
         "model": m,
         "voice": v,
         "thinking_level": lvl,
+        "tool_calling": supports_tool_calling(m),
         "key_present": key_present,
         "audio": audio,
         "turn": turn,

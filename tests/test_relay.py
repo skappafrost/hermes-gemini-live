@@ -240,6 +240,22 @@ async def test_the_delegate_tool_is_offered_when_the_lane_is_live(opened):
 
 
 @pytest.mark.asyncio
+async def test_a_model_that_cannot_call_tools_is_said_so_even_with_a_healthy_lane(opened,
+                                                                                   monkeypatch):
+    # gemini-3.8-live-extended-thinking accepts the declaration and then answers from
+    # itself, so a green lane is not enough: the user has to be told this call is
+    # talk-only rather than watch an assistant that quietly never does anything.
+    monkeypatch.setattr(relay.config, "model",
+                        lambda: "gemini-3.8-live-extended-thinking")
+    opened(FakeLive(incoming=[]))
+    browser = FakeBrowser([])
+    await relay.run_relay(browser)
+    assert opened.seen["tools"] is None
+    assert [f for f in browser.sent if f["type"] == "lane"
+            and "cannot call tools" in f["detail"]]
+
+
+@pytest.mark.asyncio
 async def test_a_finished_run_crosses_back_onto_the_loop_as_a_spoken_note():
     # The worker thread must not touch sockets itself; it hands the loop a coroutine.
     live = FakeLive(end_after_script=False)

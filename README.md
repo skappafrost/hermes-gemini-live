@@ -50,7 +50,7 @@ Every key is read from the environment of the profile that serves the call. A ke
 | Key | Default | What it does |
 |---|---|---|
 | `GEMINI_LIVE_API_KEY` → `GEMINI_API_KEY` | — | Live credential, server-side only |
-| `GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | Live model id, `models/` added once |
+| `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Live model id, `models/` added once. `...-extended-thinking` sounds the same but **cannot call tools** — see the model table |
 | `GEMINI_LIVE_THINKING_LEVEL` | `high` | extended-thinking models **require** a level; only `high`/`low` are accepted |
 | `GEMINI_LIVE_VOICE` | `Puck` | `Puck` `Charon` `Kore` `Fenrir` `Aoede`, **case-sensitive** |
 | `GEMINI_LIVE_SILENCE_MS` | `1200` | how long silence must run before the turn ends (400–5000) |
@@ -67,10 +67,10 @@ Every key is read from the environment of the profile that serves the call. A ke
 
 | Model | Result |
 |---|---|
-| `gemini-3.8-live` | setup accepted, audio returned at `audio/pcm;rate=24000` |
-| `gemini-3.8-live-extended-thinking` | accepted **only** with `generationConfig.thinkingConfig.thinkingLevel`; `minimal` and `auto` are refused |
-| `gemini-3.1-flash-live-preview` | accepted; returned a `toolCall` when offered the delegate tool |
-| `gemini-2.5-flash-native-audio-latest` | visible as a Live model, not exercised here |
+| `gemini-3.8-live` | setup accepted, audio returned at `audio/pcm;rate=24000`; **called `hermes_task`** when asked something it cannot know |
+| `gemini-3.8-live-extended-thinking` | accepted **only** with `generationConfig.thinkingConfig.thinkingLevel`; `minimal` and `auto` are refused. **Accepts a `functionDeclarations` setup and then never calls it** — measured at `high` and at `low`, answering "current time in Tokyo, do not guess" with audio instead. `toolConfig` is not a legal setup field (close 1007), so nothing coaxs it; the delegate is withheld from this model and the call says so out loud |
+| `gemini-3.1-flash-live-preview` | accepted; returned a `toolCall` for both the canonical test function and `hermes_task` |
+| `gemini-2.5-flash-native-audio-latest` | accepted; returned a `toolCall` |
 
 Accepted setup fields: `contextWindowCompression.slidingWindow`, `sessionResumption`,
 `inputAudioTranscription`, `outputAudioTranscription`, `tools.functionDeclarations`,
