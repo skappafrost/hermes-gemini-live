@@ -106,7 +106,7 @@ same home's `.env`.
 | `GEMINI_LIVE_API_KEY` → `GEMINI_API_KEY` | — | Live credential, server-side only |
 | `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Any Live model id; `models/` is added once. See [which one to pick](#the-delegate-is-where-the-models-differ-most) |
 | `GEMINI_LIVE_THINKING_LEVEL` | `high` | Only for `...-extended-thinking`, which **requires** a level; `high`/`low` accepted, `minimal`/`auto` refused |
-| `GEMINI_LIVE_VOICE` | `Puck` | `Puck` `Charon` `Kore` `Fenrir` `Aoede` — **case-sensitive** |
+| `GEMINI_LIVE_VOICE` | `Aoede` | `Puck` `Charon` `Kore` `Fenrir` `Aoede` — **case-sensitive**. `Aoede` (soft) and `Kore` (firm) are the two documented female voices. Careful: the endpoint answers `setupComplete` to *any* `voiceName`, so this short whitelist is what catches a typo instead of silently giving you the default voice |
 | `GEMINI_LIVE_SILENCE_MS` | `1200` | How long silence must run before the turn ends (400–5000) |
 | `GEMINI_LIVE_PREFIX_MS` | `300` | Lead-in kept before speech (100–1500) |
 | `GEMINI_LIVE_ECHO_CANCELLATION` | on | Keep ON unless you know why — see [loudspeaker note](#limits-stated-rather-than-discovered-mid-call) |
@@ -196,6 +196,15 @@ Rejected with close code **1007**: `threshold`, `voiceActivityConfig`, `serverVa
 - **A Hermes run is slow: 75.5 s measured** for a one-word answer, and 88 s for a real web
   lookup. That is why the lane answers the model with a receipt immediately and delivers the
   result later as a spoken note — a tool that waits is a dead microphone.
+- **A result never talks over the model.** The note is queued and handed over in the next ~1 s
+  gap in its speech, so it finishes the sentence it was saying before reading anything; several
+  results queue in order, and a question from a run parked on an approval jumps that queue
+  because the run behind it is standing still. The panel sees every transition immediately —
+  only the note to the model waits.
+- **The report is written for a voice model.** The delegated prompt tells the Hermes run to
+  finish in prose that reads well aloud: conclusion first, at most four short sentences, no
+  markdown or bare paths. The full answer stays in the Hermes session, so "đọc kỹ phần đó lại"
+  is a follow-up question, not a re-run.
 - **Multi-task is one Live session plus a board**, not a session per task. Four runs can be in
   flight (a run parked on an approval keeps its worker while it waits), each keeps the id the
   model saw in its receipt, and finished tasks stay on the board for the rest of the call.

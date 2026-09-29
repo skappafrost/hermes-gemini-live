@@ -192,10 +192,20 @@ def test_the_three_verbs_are_offered_and_their_schema_types_are_uppercase():
 
 
 def test_compose_prompt_folds_context_in_and_refuses_empty():
-    assert tools.compose_prompt({"task": "  list pods  "}) == "list pods"
+    prompt = tools.compose_prompt({"task": "  list pods  "})
+    assert prompt.startswith("list pods")
     assert tools.compose_prompt({}).strip() == ""
     assert tools.compose_prompt({"task": "why?", "context": "prod cluster"}).startswith(
         "why?\n\nContext from the voice call: prod cluster")
+
+
+def test_a_delegated_run_is_told_its_answer_will_be_read_aloud():
+    # The run answers a voice model, not a person staring at a chat window: without this the
+    # output comes back as tables and paths, and the speakable cut keeps only its tail.
+    prompt = tools.compose_prompt({"task": "summarise the open PRs"})
+    assert "read aloud" in prompt
+    assert "conclusion in your first sentence" in prompt
+    assert "No markdown" in prompt
 
 
 def test_the_board_keeps_waiting_and_finished_tasks_visible_to_the_call():

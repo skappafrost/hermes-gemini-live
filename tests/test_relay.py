@@ -205,14 +205,16 @@ async def test_a_tool_call_answers_with_a_receipt_and_starts_no_wait(opened, mon
     assert len(started) == 1
     prompt, on_finished, profile, task_id, on_needs_input = started[0]
     assert prompt.startswith("count the files")
+    # The shaping instruction belongs to the run, not to the row the user reads.
+    assert "read aloud" in prompt
+    assert {"type": "task_started", "id": "call_7",
+            "prompt": "count the files in web/"} in browser.sent
     assert callable(on_finished)
     assert profile is None
     # The receipt the model is handed is the id it must use later — one name per task.
     assert task_id == "call_7"
     assert callable(on_needs_input)
     assert live.responses and live.responses[0]["result"].startswith("WORK_STARTED call_7")
-    assert {"type": "task_started", "id": "call_7",
-            "prompt": "count the files in web/"} in browser.sent
 
 
 @pytest.mark.asyncio
@@ -258,7 +260,7 @@ async def test_reading_the_board_answers_from_memory_and_starts_nothing(opened, 
     book.set_state("t1", "needs_input", question="It wants to run: rm -rf scratch")
     await relay._handle_tool_call(
         {"id": "c9", "name": tools_module.BOARD_NAME, "args": {}},
-        live, FakeBrowser([]), book, None, None, asyncio.get_running_loop())
+        live, FakeBrowser([]), book, None, None, relay.NoteQueue(live))
     assert started == []
     assert live.responses[0]["result"].startswith("#t1 [needs_input]")
     assert "rm -rf scratch" in live.responses[0]["result"]
@@ -304,7 +306,7 @@ async def test_a_finished_run_crosses_back_onto_the_loop_as_a_spoken_note():
     # The worker thread must not touch sockets itself; it hands the loop a coroutine.
     live = FakeLive(end_after_script=False)
     browser = FakeBrowser([])
-    finish = relay._make_finisher(live, browser, "call_7", asyncio.get_running_loop())
+    finish = relay._make_finisher(relay.NoteQueue(live), browser, asyncio.get_running_loop())
 
     finish("task-9", "completed", "4 files matched")
     await asyncio.sleep(0.1)
@@ -312,6 +314,38 @@ async def test_a_finished_run_crosses_back_onto_the_loop_as_a_spoken_note():
     assert any("Hermes finished task #task-9" in text and "4 files matched" in text
                for text in live.text_in)
     assert {"type": "task_done", "id": "task-9", "state": "completed"} in browser.sent
+
+
+@pytest.mark.asyncio
+async def test_a_result_that_lands_mid_sentence_waits_for_the_gap():
+    # Injecting into the model's own speech made it stop the sentence it was saying and read
+    # the report instead. The panel is still told at once; only the note waits.
+    live = FakeLive(end_after_script=False)
+    browser = FakeBrowser([])
+    clock = {"now": 1000.0}
+    notes = relay.NoteQueue(live, clock=lambda: clock["now"])
+    relay._make_finisher(notes, browser, asyncio.get_running_loop())(
+        "t1", "completed", "4 files matched")
+    notes.speaking()
+    await asyncio.sleep(0.05)
+
+    assert live.text_in == [] and notes.waiting() == 1
+    assert {"type": "task_done", "id": "t1", "state": "completed"} in browser.sent
+
+    clock["now"] += relay.QUIET_BEFORE_NOTE_S + 0.1
+    assert await notes.release_quietly() is True
+    assert "Hermes finished task #t1" in live.text_in[0]
+    assert notes.waiting() == 0
+
+
+def test_the_report_note_asks_for_a_lead_and_not_for_an_interruption():
+    # Both halves of the old wording were the bug: "now" ordered the model to cut itself
+    # off, and "one short spoken sentence" is why a whole report arrived as one clause.
+    ordering = relay.RESULT_NOTE.split("Result:")[0]
+    assert "now" not in ordering
+    assert "one short spoken sentence" not in relay.RESULT_NOTE
+    assert "answer in your first sentence" in relay.RESULT_NOTE
+    assert "at most four" in relay.RESULT_NOTE
 
 
 @pytest.mark.asyncio
@@ -323,12 +357,15 @@ async def test_a_result_delivered_to_a_dead_socket_never_escapes_the_thread():
             raise LiveError("the Gemini Live socket closed (1006)")
 
     dead = Dead(end_after_script=False)
-    finish = relay._make_finisher(dead, FakeBrowser([]), "call_7", asyncio.get_running_loop())
+    notes = relay.NoteQueue(dead)
+    finish = relay._make_finisher(notes, FakeBrowser([]), asyncio.get_running_loop())
 
     finish("t", "completed", "anything")
     await asyncio.sleep(0.1)
 
     assert dead.text_in == []
+    # A failed send must not eat the result: the pump gets another turn at it.
+    assert notes.waiting() == 1
 
 
 @pytest.mark.asyncio

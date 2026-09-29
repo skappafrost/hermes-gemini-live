@@ -20,9 +20,13 @@ THINKING_LEVELS = ("high", "low")
 DEFAULT_THINKING_LEVEL = "high"
 
 #: Google's Live voice list. Case-sensitive on the wire, so an unknown or
-#: case-folded name refuses instead of sending a value the API may reject.
+#: case-folded name refuses instead of sending a value the API may reject. The whitelist is
+#: kept short on purpose: the endpoint answers ``setupComplete`` to ANY ``voiceName``, so a
+#: typo would silently fall back to a default voice instead of failing — measured with 20
+#: candidate names, every one of them "accepted". These five are the documented Live set.
+#: ``Aoede`` and ``Kore`` are the two described as female; ``Aoede`` is the softer of them.
 LIVE_VOICES = ("Puck", "Charon", "Kore", "Fenrir", "Aoede")
-DEFAULT_VOICE = "Puck"
+DEFAULT_VOICE = "Aoede"
 
 #: End-of-turn tuning, proven against the endpoint as accepted fields of
 #: ``realtimeInputConfig.automaticActivityDetection``. There is NO sensitivity/threshold

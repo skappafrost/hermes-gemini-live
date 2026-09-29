@@ -100,10 +100,23 @@ _DECLARATIONS = [
 ]
 
 
+#: Shaped for the reader, not for a chat window: a delegated run's final text is handed to a
+#: voice model to speak, so the conclusion has to be at the front and in prose. Without this
+#: the run answers the way it answers a person typing — tables, paths, code — and everything
+#: before the tail is cut by the speakable limit.
+OUTPUT_SHAPE = (
+    "\n\nFinish with an answer a voice assistant can read aloud: the conclusion in your first "
+    "sentence, then at most four short sentences of what actually matters. No markdown, tables, "
+    "bullets, code blocks or bare file paths — the user will ask you in this same session for "
+    "anything more detailed, so keep the answer, not the report."
+)
+
+
 def compose_prompt(args: dict) -> str:
     """The run's prompt text: task, plus any context the model chose to pass."""
     task = str((args or {}).get("task") or "").strip()
     context = str((args or {}).get("context") or "").strip()
     if not task:
         return ""
-    return f"{task}\n\nContext from the voice call: {context}" if context else task
+    prompt = f"{task}\n\nContext from the voice call: {context}" if context else task
+    return prompt + OUTPUT_SHAPE

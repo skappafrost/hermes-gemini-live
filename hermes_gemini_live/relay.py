@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from collections import deque
 from typing import Any
 
 from . import agent_lane, config, wire, tools as tools_module
@@ -29,8 +31,10 @@ MAX_BROWSER_FRAME_BYTES = 1 << 20
 TERMINAL_FRAME_TYPES = frozenset({"go_away"})
 RESULT_NOTE = (
     "Hermes finished task #{task_id} ({state}). Result: {text}\n"
-    "Tell the user that outcome now in one short spoken sentence. Do not invent details, "
-    "do not add commentary, and do not start another task about it."
+    "Tell the user what you found: the answer in your first sentence, then at most four more "
+    "short spoken sentences. The full report stays in the Hermes session, so offer to answer "
+    "questions about it instead of reading everything. Do not invent details, do not add "
+    "commentary, and do not start another task about it."
 )
 NEEDS_NOTE = (
     "Task #{task_id} has stopped and needs the user: {question}\n"
@@ -38,6 +42,49 @@ NEEDS_NOTE = (
     "hermes_task_update on task {task_id} with action approve or deny using what they said. "
     "Never decide the approval yourself, and never start a second task about this one."
 )
+#: How long the model must have been silent before a note reaches it. Injecting a finished
+#: result into the middle of its own speech makes it stop the sentence it was saying and read
+#: the report instead, which is what the user heard as being cut off.
+QUIET_BEFORE_NOTE_S = 1.0
+
+
+class NoteQueue:
+    """Model-facing notes, released only in the gaps between the model's utterances.
+
+    One at a time and first-in-first-out: several tasks can finish during a single long
+    answer, and dumping all of them at once turns the report into noise. A note waiting on
+    an approval is urgent, because the run behind it is standing still.
+    """
+
+    def __init__(self, live: LiveSession, clock=None) -> None:
+        self._live = live
+        # Injectable rather than patching ``time.monotonic``: that module is the event
+        # loop's own clock, so a test that freezes it freezes asyncio with it.
+        self._clock = clock or time.monotonic
+        self._notes: deque[str] = deque()
+        self._spoken_at = 0.0
+
+    def speaking(self) -> None:
+        """Stamp the model as busy; called for every audio frame forwarded."""
+        self._spoken_at = self._clock()
+
+    def push(self, text: str, *, urgent: bool = False) -> None:
+        (self._notes.appendleft if urgent else self._notes.append)(text)
+
+    def waiting(self) -> int:
+        return len(self._notes)
+
+    async def release_quietly(self) -> bool:
+        """Hand over one note if the model has stopped speaking. True when it did.
+
+        Popped only after the send succeeds: a socket that dies mid-delivery must not eat
+        the result, because the pump tries again on its next wake-up.
+        """
+        if not self._notes or self._clock() - self._spoken_at < QUIET_BEFORE_NOTE_S:
+            return False
+        await self._live.send_text(self._notes[0])
+        self._notes.popleft()
+        return True
 
 
 async def _browser_to_live(browser: Any, live: LiveSession, note: dict) -> None:
@@ -57,8 +104,7 @@ async def _browser_to_live(browser: Any, live: LiveSession, note: dict) -> None:
 
 async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
                             book: agent_lane.RunBook, session_key: str | None,
-                            profile: str | None,
-                            loop: asyncio.AbstractEventLoop) -> None:
+                            profile: str | None, notes: NoteQueue) -> None:
     """Receipt first, work in the pool. The only await here is a small local socket send.
 
     The rule is about not waiting on a *run* (seconds to minutes), not about never
@@ -82,20 +128,24 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
         await live.send_function_response(call_id, "No task text was supplied.", name)
         return
 
+    loop = asyncio.get_running_loop()
     await live.send_function_response(
         call_id,
         f"WORK_STARTED {call_id}: Hermes is running it. Do not describe any result yet.",
         name)
-    await browser.send_text(_dump({"type": "task_started", "id": call_id, "prompt": task[:200]}))
+    # The panel shows what the user asked for, not the shaping instruction appended for the
+    # worker — otherwise every task row ends with a paragraph about voice output.
+    await browser.send_text(_dump({"type": "task_started", "id": call_id,
+                                   "prompt": str(args.get("task") or "").strip()[:200]}))
     agent_lane.start_task(
         task,
-        on_finished=_make_finisher(live, browser, call_id, loop),
+        on_finished=_make_finisher(notes, browser, loop),
         session_key=session_key,
         book=book,
         profile=profile,
         # One name per task: the id in this receipt is the id the model addresses later.
         task_id=call_id,
-        on_needs_input=_make_parker(live, browser, loop),
+        on_needs_input=_make_parker(notes, browser, loop),
     )
 
 
@@ -145,62 +195,73 @@ async def _update_task(call_id: str, args: dict, live: LiveSession, browser: Any
     await browser.send_text(_dump({"type": "task_update", "id": task, "action": action}))
 
 
-def _make_parker(live: LiveSession, browser: Any, loop: asyncio.AbstractEventLoop):
-    """A worker-thread callback that puts a waiting task in front of the model.
+def _hand_off(coro, loop: asyncio.AbstractEventLoop, task_id: str, why: str) -> None:
+    try:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+    except RuntimeError:
+        # The loop is gone: the call ended while Hermes was still working. The run keeps
+        # going and its news simply goes unspoken, which is said here rather than dying
+        # quietly on a worker thread.
+        logger.info("hermes-gemini-live: task %s %s after its call closed", task_id, why)
 
-    The approval question arrives on a thread that owns no sockets, so it is handed to the
-    loop exactly like a finished result is.
-    """
+
+def _make_parker(notes: NoteQueue, browser: Any, loop: asyncio.AbstractEventLoop):
+    """A worker-thread callback that queues the question a parked run is waiting on."""
     def on_needs_input(task_id: str, question: str, request_id: str) -> None:
         async def deliver() -> None:
-            try:
-                await live.send_text(NEEDS_NOTE.format(task_id=task_id, question=question))
-                await browser.send_text(_dump({"type": "task_needs_input", "id": task_id,
-                                               "question": question[:200]}))
-            except (LiveError, RuntimeError) as exc:
-                logger.info("hermes-gemini-live: task %s is waiting but the call ended (%s)",
-                            task_id, exc)
+            notes.push(NEEDS_NOTE.format(task_id=task_id, question=question), urgent=True)
+            await browser.send_text(_dump({"type": "task_needs_input", "id": task_id,
+                                           "question": question[:200]}))
+            await _release(notes, task_id, "is waiting")
 
-        try:
-            asyncio.run_coroutine_threadsafe(deliver(), loop)
-        except RuntimeError:
-            logger.info("hermes-gemini-live: task %s needs input after its call closed", task_id)
+        _hand_off(deliver(), loop, task_id, "was waiting")
 
     return on_needs_input
 
 
-def _make_finisher(live: LiveSession, browser: Any, call_id: str,
+def _make_finisher(notes: NoteQueue, browser: Any,
                    loop: asyncio.AbstractEventLoop):
+    """A worker-thread callback that queues a finished result for the next gap in speech."""
     def on_finished(task_id: str, state: str, text: str) -> None:
         async def deliver() -> None:
-            try:
-                await live.send_text(RESULT_NOTE.format(task_id=task_id, state=state,
-                                                        text=text or "no output"))
-                await browser.send_text(_dump({"type": "task_done", "id": task_id,
-                                               "state": state}))
-            except (LiveError, RuntimeError) as exc:
-                # The result is real even if nobody is left to hear it spoken.
-                logger.info("hermes-gemini-live: task %s finished but the call ended (%s)",
-                            task_id, exc)
+            notes.push(RESULT_NOTE.format(task_id=task_id, state=state, text=text or "no output"))
+            await browser.send_text(_dump({"type": "task_done", "id": task_id,
+                                           "state": state}))
+            await _release(notes, task_id, "finished")
 
-        try:
-            asyncio.run_coroutine_threadsafe(deliver(), loop)
-        except RuntimeError:
-            # The loop is already gone: the call ended while Hermes was still working.
-            # The run keeps going and its answer simply goes unspoken, which is said here
-            # rather than dying quietly on a worker thread.
-            logger.info("hermes-gemini-live: task %s finished after its call closed", task_id)
+        _hand_off(deliver(), loop, task_id, "finished")
 
     return on_finished
 
 
+async def _release(notes: NoteQueue, task_id: str, why: str) -> None:
+    """Try to speak a note straight away if the model happens to be quiet.
+
+    A dead socket here is not a lost result: the note stays queued and the pump retries it
+    on its next wake-up, so the only thing to report is that the early attempt failed.
+    """
+    try:
+        await notes.release_quietly()
+    except LiveError as exc:
+        logger.info("hermes-gemini-live: task %s %s but the call is closing (%s)",
+                    task_id, why, exc)
+
+
 async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
                            book: agent_lane.RunBook, session_key: str | None,
-                           profile: str | None) -> None:
-    loop = asyncio.get_running_loop()
+                           profile: str | None, notes: NoteQueue) -> None:
     while True:
-        raw = await live.recv()
+        try:
+            # The timeout is not a liveness check, it is the other half of the queue: a
+            # result that landed mid-sentence has to be released once the model stops, and
+            # frames only arrive while it is talking.
+            raw = await asyncio.wait_for(live.recv(), timeout=QUIET_BEFORE_NOTE_S)
+        except asyncio.TimeoutError:
+            await notes.release_quietly()
+            continue
         for frame in wire.browser_frames(raw):
+            if frame["type"] == "audio":
+                notes.speaking()
             await browser.send_text(_dump(frame))
             if frame["type"] == "error":
                 note["reason"] = frame["detail"]
@@ -211,7 +272,8 @@ async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
             if frame["type"] == "tool_call":
                 for call in frame["calls"]:
                     await _handle_tool_call(call, live, browser, book, session_key,
-                                            profile, loop)
+                                            profile, notes)
+        await notes.release_quietly()
 
 
 def _loads(message: str) -> dict:
@@ -270,8 +332,10 @@ async def run_relay(browser: Any, session_key: str | None = None,
                                        "detail": lane_detail}))
 
     book = agent_lane.RunBook()
+    notes = NoteQueue(live)
     up = asyncio.create_task(_browser_to_live(browser, live, note))
-    down = asyncio.create_task(_live_to_browser(browser, live, note, book, session_key, profile))
+    down = asyncio.create_task(_live_to_browser(browser, live, note, book, session_key,
+                                                profile, notes))
     try:
         done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -303,6 +367,10 @@ async def run_relay(browser: Any, session_key: str | None = None,
             if task.done() and not task.cancelled():
                 task.exception()
         await live.close()
+        if notes.waiting():
+            # Queued and never spoken: the result is real, the user simply hung up first.
+            logger.info("hermes-gemini-live: call ended with %d result(s) still queued",
+                        notes.waiting())
         if book.pending():
             logger.info("hermes-gemini-live: call ended with %d run(s) still going: %s",
                         len(book.pending()), ",".join(book.pending()))
