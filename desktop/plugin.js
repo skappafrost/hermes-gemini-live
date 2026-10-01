@@ -391,6 +391,18 @@ function receive (event) {
   }
 }
 
+/**
+ * The user's own answer to a run parked on an approval. This press is the only thing that
+ * can approve one: the voice model has no approve verb, because it also hears the room and
+ * reads run output, and neither may unlock a command.
+ */
+function answerApproval (choice) {
+  const id = call.waiting[0]
+  const ws = call.socket
+  if (!id || !ws || ws.readyState !== WebSocket.OPEN) return
+  ws.send(JSON.stringify({ type: 'approval', id, choice }))
+}
+
 async function start (rest) {
   if (call.state !== 'idle') return
   call.state = 'connecting'
@@ -496,6 +508,22 @@ function TalkControl ({ rest }) {
       h('span', { 'aria-hidden': 'true', className: 'font-mono text-[0.6875rem] text-muted-foreground/85' },
         formatElapsed(shownSeconds))),
     h(VoiceLevelBars, { active: !thinking, level: call.level }),
+    waiting && h('button', {
+      type: 'button',
+      'aria-label': 'Approve what Hermes is asking, once',
+      title: call.detail || 'Approve once',
+      onClick: () => answerApproval('approve'),
+      className: 'inline-flex h-6 shrink-0 items-center rounded-full px-2 text-[0.6875rem] ' +
+        'bg-muted text-foreground transition-colors hover:bg-muted/70'
+    }, 'Approve'),
+    waiting && h('button', {
+      type: 'button',
+      'aria-label': 'Deny what Hermes is asking',
+      title: call.detail || 'Deny',
+      onClick: () => answerApproval('deny'),
+      className: 'inline-flex h-6 shrink-0 items-center rounded-full px-2 text-[0.6875rem] ' +
+        'text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
+    }, 'Deny'),
     h('button', {
       type: 'button',
       'aria-label': call.muted ? 'Unmute the microphone' : 'Mute the microphone',

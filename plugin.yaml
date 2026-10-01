@@ -18,6 +18,9 @@ requires_env:
     description: "Google AI Studio API key for the Gemini Live API (free tier works)"
     url: "https://aistudio.google.com/apikey"
     secret: true
+# 0.21.5 is the package version of release v2026.9.24, the first whose Desktop SDK exports
+# resolveSiblingWsUrl (desktop/plugin.js imports it).
+requires_hermes: ">=0.21.5"
 provides_tools: []
 provides_hooks: []
 
