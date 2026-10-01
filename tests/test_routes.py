@@ -84,16 +84,16 @@ def test_relay_authorizes_through_core_gate_not_a_private_copy(client, monkeypat
     assert seen == [marker]
 
 
-def test_authorize_gate_is_permissive_only_for_a_bare_fastapi_host(client, monkeypatch):
-    # A harness with no dashboard module has no auth to consult, and no credential to
-    # steal. Anything narrower is a real host whose contract we must not guess about.
+def test_authorize_gate_refuses_when_the_host_has_no_gate_module(client, monkeypatch):
+    # Hosts that predate hermes_cli.web_server_chat still serve a real, authenticated
+    # dashboard; a missing gate there must not open the relay to any local process.
     http, module = client
 
     def missing(name):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(module.importlib, "import_module", missing)
-    assert module._upgrade_authorized(object()) is True
+    assert module._upgrade_authorized(object()) is False
 
 
 def test_authorize_gate_refuses_when_the_host_moved_the_symbol(client, monkeypatch):

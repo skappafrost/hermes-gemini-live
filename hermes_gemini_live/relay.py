@@ -38,9 +38,10 @@ RESULT_NOTE = (
 )
 NEEDS_NOTE = (
     "Task #{task_id} has stopped and needs the user: {question}\n"
-    "Ask the user about it now in one short spoken question, wait for their answer, then call "
-    "hermes_task_update on task {task_id} with action approve or deny using what they said. "
-    "Never decide the approval yourself, and never start a second task about this one."
+    "Tell the user about it now in one short spoken sentence: only they can approve it, with "
+    "the Approve button on the Gemini Live control. You cannot approve it. If they say no, "
+    "call hermes_task_update on task {task_id} with action deny. Never start a second task "
+    "about this one."
 )
 #: How long the model must have been silent before a note reaches it. Injecting a finished
 #: result into the middle of its own speech makes it stop the sentence it was saying and read
@@ -87,7 +88,9 @@ class NoteQueue:
         return True
 
 
-async def _browser_to_live(browser: Any, live: LiveSession, note: dict) -> None:
+async def _browser_to_live(browser: Any, live: LiveSession, note: dict,
+                           book: agent_lane.RunBook | None = None,
+                           session_key: str | None = None, profile: str | None = None) -> None:
     while True:
         message = await browser.receive_text()
         if len(message) > MAX_BROWSER_FRAME_BYTES:
@@ -97,6 +100,8 @@ async def _browser_to_live(browser: Any, live: LiveSession, note: dict) -> None:
             await live.send_audio(_b64(message))
         elif kind == "text":
             await live.send_text(_text(message))
+        elif kind == "approval" and book is not None:
+            await _user_approval(_loads(message), live, browser, book, session_key, profile)
         elif kind == "close":
             note["reason"] = "browser closed the call"
             return
@@ -173,8 +178,8 @@ async def _update_task(call_id: str, args: dict, live: LiveSession, browser: Any
         return
 
     try:
-        if action in ("approve", "deny"):
-            agent_lane.approve(run_id, "once" if action == "approve" else "deny",
+        if action == "deny":
+            agent_lane.approve(run_id, "deny",
                                book.request_id(task), session_key=session_key, profile=profile)
         elif action == "steer":
             agent_lane.steer(run_id, answer or "The user has no further instruction.",
@@ -190,9 +195,39 @@ async def _update_task(call_id: str, args: dict, live: LiveSession, browser: Any
                                        "detail": str(exc)[:200]}))
         return
 
-    book.set_state(task, "running" if action in ("approve", "steer") else "cancelled")
+    book.set_state(task, "running" if action == "steer" else "cancelled")
     await live.send_function_response(call_id, f"UPDATE_DONE {task} {action}.")
     await browser.send_text(_dump({"type": "task_update", "id": task, "action": action}))
+
+
+async def _user_approval(value: dict, live: LiveSession, browser: Any,
+                         book: agent_lane.RunBook, session_key: str | None,
+                         profile: str | None) -> None:
+    """The user pressed Approve or Deny on the Desktop control.
+
+    This is the only path that can approve a parked run: it arrives on the authenticated
+    relay socket from the renderer, never from a Live ``toolCall``, so nothing the model
+    hears or reads can trigger it. Only ``once`` is ever granted.
+    """
+    task = str(value.get("id") or "").strip().lstrip("#")
+    action = "approve" if value.get("choice") == "approve" else "deny"
+    run_id = book.run_id(task)
+    if not run_id:
+        await browser.send_text(_dump({"type": "task_failed", "id": task,
+                                       "detail": "that task is not on this call's board"}))
+        return
+    try:
+        await asyncio.to_thread(agent_lane.approve, run_id,
+                                "once" if action == "approve" else "deny",
+                                book.request_id(task), session_key=session_key, profile=profile)
+    except agent_lane.LaneUnavailable as exc:
+        await browser.send_text(_dump({"type": "task_failed", "id": task,
+                                       "detail": str(exc)[:200]}))
+        return
+    book.set_state(task, "running" if action == "approve" else "cancelled")
+    await browser.send_text(_dump({"type": "task_update", "id": task, "action": action}))
+    await live.send_text(f"The user pressed {action.capitalize()} on task #{task}. "
+                         "Acknowledge it in a few words.")
 
 
 def _hand_off(coro, loop: asyncio.AbstractEventLoop, task_id: str, why: str) -> None:
@@ -291,7 +326,10 @@ def _frame_type(message: str) -> str:
         return ""
     if kind == "text" and not str(value.get("text") or "").strip():
         return ""
-    return kind if kind in ("audio", "text", "close") else ""
+    if kind == "approval" and not (str(value.get("id") or "").strip()
+                                   and value.get("choice") in ("approve", "deny")):
+        return ""
+    return kind if kind in ("audio", "text", "approval", "close") else ""
 
 
 def _b64(message: str) -> str:
@@ -333,7 +371,7 @@ async def run_relay(browser: Any, session_key: str | None = None,
 
     book = agent_lane.RunBook()
     notes = NoteQueue(live)
-    up = asyncio.create_task(_browser_to_live(browser, live, note))
+    up = asyncio.create_task(_browser_to_live(browser, live, note, book, session_key, profile))
     down = asyncio.create_task(_live_to_browser(browser, live, note, book, session_key,
                                                 profile, notes))
     try:

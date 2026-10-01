@@ -41,15 +41,17 @@ def _upgrade_authorized(ws: WebSocket) -> bool:
     through the package attribute and would keep serving the real module even when a
     harness replaced it in ``sys.modules``.
 
-    Two ways this can break must fail CLOSED, not open, because the route mints a live
-    provider session: core renaming or removing ``_ws_auth_ok``, or the module being
-    present but the call raising. A bare-FastAPI harness where the import itself fails is
-    the only permissive case, and that process holds no dashboard auth to bypass.
+    Every way this can break fails CLOSED, not open, because the route mints a live
+    provider session and can start Hermes runs: the module missing (older hosts that
+    predate ``web_server_chat`` still serve a real dashboard with real auth), core renaming
+    or removing ``_ws_auth_ok``, or the call raising.
     """
     try:
         gate = importlib.import_module("hermes_cli.web_server_chat")
     except ModuleNotFoundError:
-        return True
+        logger.warning("hermes-gemini-live: this host has no hermes_cli.web_server_chat "
+                       "auth gate; refusing the upgrade")
+        return False
     except Exception as exc:
         logger.warning("hermes-gemini-live: cannot load the dashboard auth gate (%s); "
                        "refusing the upgrade", type(exc).__name__)

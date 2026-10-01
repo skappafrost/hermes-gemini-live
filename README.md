@@ -92,7 +92,7 @@ delegated runs, its own `API_SERVER_KEY` (see [Troubleshooting](#troubleshooting
 | **Composer control** | One row in the composer's action area: tap to start, tap Stop to hang up. Chrome is copied from core's own voice surfaces, so it reads as part of the app. |
 | **State you can see** | `Connecting` · `Listening` · `Speaking` · `Thinking` · `Hermes is working · N tasks` · `Hermes needs you` · `Muted`, each with its own spinner, meter and clock — a long wait never looks like a crash. |
 | **Mute without hanging up** | Drops the microphone at the last step before the socket: session, context and running tasks stay alive, and you stop paying audio-in tokens. |
-| **Real work, delegated** | Three verbs, not thirty schemas: `hermes_task` starts a job, `hermes_tasks` reads the call's board, `hermes_task_update(task, action)` answers or redirects one of them. |
+| **Real work, delegated** | Three verbs, not thirty schemas: `hermes_task` starts a job, `hermes_tasks` reads the call's board, `hermes_task_update(task, action)` denies, steers or stops one of them (approving a parked run is a user button press, never a model call). |
 | **Survives your own clicking** | The call lives outside the React component's lifecycle, so opening a session or switching panes mid-sentence does not end it. |
 
 ## Configuration
@@ -287,7 +287,7 @@ session token meter and auto-redial through session resumption, and it is docume
 This plugin's bet is the opposite: a single control in the composer, and the voice model being
 **able to make Hermes do things** — files, terminals, the web, memory — while the conversation
 continues. That is where almost all of the work here went, and it is why the lane has a task
-board, an approval round-trip to the user's voice, and a measured table of which Live models
+board, a spoken approval prompt answered by the user's own Approve/Deny press, and a measured table of which Live models
 actually delegate (they do not all). Choose on that axis:
 
 | You want | Pick |
