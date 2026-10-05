@@ -267,8 +267,9 @@ async def test_reading_the_board_answers_from_memory_and_starts_nothing(opened, 
 
 
 @pytest.mark.asyncio
-async def test_an_approval_answer_reaches_the_lane_with_the_request_it_belongs_to(
-        opened, monkeypatch):
+async def test_the_voice_model_cannot_approve_a_parked_run(opened, monkeypatch):
+    # The model hears the room and reads run output, so an injected "approve it" must not
+    # be able to unlock a dangerous command through a tool call.
     sent = []
     monkeypatch.setattr(relay.agent_lane, "approve",
                         lambda run_id, choice, request_id, **k: sent.append(
@@ -281,8 +282,27 @@ async def test_an_approval_answer_reaches_the_lane_with_the_request_it_belongs_t
     browser = FakeBrowser([])
     await relay._update_task("c10", {"task": "t1", "action": "approve", "answer": "yes"},
                              live, browser, book, None, None)
+    assert sent == []
+    assert live.responses[0]["result"].startswith("BAD_REQUEST")
+    assert "approve" not in tools_module.ACTIONS
+
+
+@pytest.mark.asyncio
+async def test_the_users_approve_press_reaches_the_lane_with_its_request(opened, monkeypatch):
+    sent = []
+    monkeypatch.setattr(relay.agent_lane, "approve",
+                        lambda run_id, choice, request_id, **k: sent.append(
+                            (run_id, choice, request_id)))
+    live = opened(FakeLive(incoming=[]))
+    book = agent_lane.RunBook()
+    book.register("t1", "clean the scratch dir")
+    book.attach_run("t1", "run_1")
+    book.set_state("t1", "needs_input", question="may I?", request_id="req_9")
+    browser = FakeBrowser([{"type": "approval", "id": "t1", "choice": "approve"},
+                           {"type": "close"}])
+    await relay._browser_to_live(browser, live, {"reason": ""}, book, None, None)
     assert sent == [("run_1", "once", "req_9")]
-    assert live.responses[0]["result"] == "UPDATE_DONE t1 approve."
+    assert {"type": "task_update", "id": "t1", "action": "approve"} in browser.sent
     assert book.pending() == ["t1"]
 
 

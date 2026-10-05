@@ -15,16 +15,21 @@ fix lands, email the maintainer through their GitHub profile instead.
 - **A Hermes run, in your profile's memory.** `POST /v1/runs` on the local api server means the
   voice model can ask Hermes to read files, run commands and browse. Runs are routed to
   `/p/<profile>/` with that profile's own `API_SERVER_KEY`, and a run that stops for an approval
-  is reported to you in voice and on the panel rather than answered automatically; the plugin
-  never calls `approve` on its own initiative.
+  is reported to you in voice and on the panel rather than answered automatically. The voice
+  model has no approve verb: only your press on the control's Approve button (a renderer frame
+  on the authenticated relay socket, never a model tool call) approves it, and only `once`.
+- **Run output and prompts go to Gemini.** Delegated-run results (up to 4000 characters each),
+  the task board and approval prompts are sent to `generativelanguage.googleapis.com` as text
+  so the voice model can speak them.
 - **No telemetry.** No usage reporting, no analytics, no remote self-updates. The plugin only
   changes when you pull it.
 
 ## Known bounds
 
 - The Desktop relay route delegates authorisation to core's own dashboard gate
-  (`hermes_cli.web_server_chat._ws_auth_ok`) and **fails closed**: if that gate is missing or
-  raises, the websocket is refused rather than trusted.
+  (`hermes_cli.web_server_chat._ws_auth_ok`) and **fails closed**: if that gate is missing
+  (including hosts too old to ship the module) or raises, the websocket is refused rather than
+  trusted.
 - Run output is bounded to 4000 characters of speakable text, with markdown, code blocks and
   bare paths removed before the model reads it aloud.
 - A call is a metered, always-listening socket: leaving it open keeps streaming audio upstream.
@@ -32,5 +37,6 @@ fix lands, email the maintainer through their GitHub profile instead.
 
 ## Version support
 
-Tested against Hermes Agent v0.21.x on Windows; CI runs the suite on ubuntu and Windows with
+Requires Hermes Agent 0.21.5 or newer (`requires_hermes: ">=0.21.5"`; the Desktop bundle
+imports `resolveSiblingWsUrl`, first exported in release v2026.9.24). Tested on Windows; CI runs the suite on ubuntu and Windows with
 Python 3.11 and 3.12.

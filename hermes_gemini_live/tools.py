@@ -19,7 +19,10 @@ TASK_TOOLS = (DELEGATE_NAME, BOARD_NAME, UPDATE_NAME)
 
 #: What the model may do to a task already on the board. One list on purpose: the enum the
 #: declaration offers and the verbs the relay acts on must never drift apart.
-ACTIONS = ("approve", "deny", "steer", "stop")
+#: There is no "approve": the model also reads untrusted text (room audio, run output), so it
+#: must never be the one that unlocks a dangerous command. Approval is a user press on the
+#: Desktop control, which reaches the relay as a renderer frame (see relay._user_approval).
+ACTIONS = ("deny", "steer", "stop")
 
 DESCRIPTION = (
     "Hand real work to Hermes: files, terminals, web, code, memory, anything the user's "
@@ -80,10 +83,11 @@ _DECLARATIONS = [
     {
         "name": UPDATE_NAME,
         "description": (
-            "Act on a task already on the board, by its short id. 'approve' and 'deny' answer a "
-            "task that stopped to ask permission — say what it asked first and use the user's own "
-            "answer, never your own judgement. 'steer' sends new information to a task that is "
-            "still working. 'stop' abandons one the user no longer wants."
+            "Act on a task already on the board, by its short id. You cannot approve a task "
+            "that stopped to ask permission — only the user can, with the Approve button on the "
+            "Gemini Live control; 'deny' refuses it when the user says no. 'steer' sends new "
+            "information to a task that is still working. 'stop' abandons one the user no "
+            "longer wants."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -92,7 +96,7 @@ _DECLARATIONS = [
                 "action": {"type": "STRING", "enum": list(ACTIONS),
                            "description": "What to do with it."},
                 "answer": {"type": "STRING", "description": "For 'steer': what to tell it. "
-                           "For approve/deny: the user's words, if any."},
+                           "For deny: the user's words, if any."},
             },
             "required": ["task", "action"],
         },
