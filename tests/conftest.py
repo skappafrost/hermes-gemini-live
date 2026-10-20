@@ -1,9 +1,12 @@
-"""Put the plugin root on sys.path — Hermes loads this package by file path, and these
-tests must import it the same way the host does."""
-
+"""Import the plugin as the host does and isolate durable receipts."""
 import sys
 from pathlib import Path
+import pytest
 
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+@pytest.fixture(autouse=True)
+def isolated_task_receipts(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))

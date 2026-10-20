@@ -66,7 +66,7 @@ def test_the_instruction_names_the_delegate_and_removes_the_escape():
     # So the contract is that the instruction points at the tool by its real name and
     # forbids self-answer — not the exact prose.
     assert tools.DELEGATE_NAME in config.DEFAULT_INSTRUCTIONS
-    assert "no knowledge of the present" in config.DEFAULT_INSTRUCTIONS
+    assert "built-in knowledge is not live" in config.DEFAULT_INSTRUCTIONS
     assert "never guess" in config.DEFAULT_INSTRUCTIONS
 
 

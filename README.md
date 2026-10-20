@@ -6,10 +6,13 @@
 Full-duplex **Gemini Live** voice inside [Hermes Agent](https://github.com/NousResearch/hermes-agent)'s
 Desktop app, with real work delegated to Hermes while you keep talking.
 
-Press the mic in the composer, speak, hear Gemini answer. Ask for something that needs files,
-a terminal, the web, or memory, and the voice model hands the job to Hermes over the api server,
-keeps the conversation going, and reads the outcome aloud when it lands. Several jobs can be in
-flight at once; when one stops because it needs *your* permission, the lane says so out loud.
+Press the mic in the composer, speak, hear Gemini answer. Desktop work now runs through the
+normal Hermes runtime in the current chat: its tools, progress and written results appear
+there. Gemini is the audio interface; your configured Hermes model executes the work.
+
+**End voice** closes the paid Gemini connection without cancelling Hermes. Reopen voice to
+check or steer the same task. Reconnecting never automatically submits another coding run.
+The original API-worker relay remains available for integrations that omit `native=1`.
 
 Your `GEMINI_API_KEY` stays server-side. This is not a preference: the Live API carries the key
 in the websocket URL, so handing it to a renderer would put a credential in a browser process.
@@ -21,14 +24,64 @@ Audio relays through Hermes' own backend, which holds the key.
 
 - **Hermes Agent with the Desktop app.** The composer control is a Desktop plugin; the CLI,
   TUI and messaging gateways get the delegated work but no microphone.
-- **A running gateway with the `api_server` platform** (default port **8642**). Without it the
-  call still works as pure conversation and the panel states that Hermes work is unavailable.
+- **A recent Desktop SDK** exposing `host.composer.submit`, `host.onEvent`,
+  `host.profileRoutes`, `host.requestProfile`, focused runtime/stored-session ownership and
+  `composer.underside`. Native Desktop calls use this runtime directly; the legacy API-worker
+  path still requires the `api_server` platform (default port **8642**).
 - **A Google AI Studio API key.** The free tier works; there is no OAuth path here.
 - **Nothing to install on the Python side.** `websockets`, `aiohttp` and `httpx` already ship in
   the Hermes runtime, and this plugin deliberately declares no dependencies (see
   [Why there is no `pyproject.toml`](#why-there-is-no-pyprojecttoml)).
 
 ## Install
+
+### Native same-thread workflow
+
+1. Open the Hermes chat you want to work in and start Gemini Live with the existing mic button.
+2. Ask for work. One native Hermes turn appears in that chat, using its configured model,
+   tools and approval controls. Spoken transcription is retained alongside the task summary.
+3. End voice whenever you want. The written turn and tool results keep progressing.
+4. Reopen voice and ask for status or give a correction. The task board identifies the existing
+   turn; steering targets that runtime rather than starting another API worker.
+
+A single-line strip **above the prompt box** shows status, truncated activity and the last update.
+Completed native receipts retire from the voice counter, including after a late/replayed acknowledgment.
+The strip hides after completion; failures and waiting states remain visible. New voice requests
+and corrections have a persistent `Voice request` tag in the native user message. A separate
+badge beside the microphone shows green **Live** only after provider setup and microphone
+capture are ready, amber **Muted**, or neutral **Off**. Missing microphone capture is reported
+separately and never shown as green. Voice connection state does not imply coding activity.
+It does not copy private reasoning or create a second conversation screen. Native Hermes
+continues to render its own tool cards, approvals and final answer.
+
+Submissions are acknowledged from the gateway, not optimistic UI state. Receipts persist
+before dispatch; duplicate request IDs return the same receipt. An uncertain acknowledgment
+does **not** fall back to another run. Changing chats/profiles ends voice and cannot redirect
+an old socket's input into the newly selected conversation. After a missed completion event,
+recovery requires a matching saved request and a final assistant stop row.
+
+Native Stop/approval controls remain authoritative. The voice model cannot approve a native
+request; ending voice does not mean stopping coding. If the native runtime cannot accept a
+correction, the tool reports that refusal instead of silently starting a replacement task.
+
+Tested end to end on Windows with a local DeepSeek model: voice submit, hangup, reconnect,
+steering, duplicate-delivery replay, matching tools/results and completion with voice off.
+Other models use the same configured native runtime but were not independently qualified.
+Native end-to-end Linux/macOS testing is still needed. The existing relay unit tests retain
+the API-worker path. No model-serving configuration or voice selection is changed.
+
+Run local checks with `python -m pytest -q` and these dependency-free Node suites:
+
+```bash
+node tests/native-workflow.test.cjs
+node tests/compact-status.test.cjs
+node tests/voice-origin-status.test.cjs
+node tests/conversation-progress.test.cjs
+node tests/task-history.test.cjs
+node tests/playback-speed.test.cjs
+```
+
+### Installation command
 
 One command, into the Hermes home your shell points at:
 

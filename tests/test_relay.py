@@ -169,6 +169,7 @@ async def test_a_refused_open_reports_why_and_leaves_no_session(monkeypatch):
             raise ConfigError("no Gemini key for Live: set GEMINI_LIVE_API_KEY or GEMINI_API_KEY")
 
     monkeypatch.setattr(relay, "LiveSession", Refusing)
+    monkeypatch.setattr(relay.agent_lane, 'probe', lambda *a, **k: (agent_lane.STATUS_OK, ''))
     browser = FakeBrowser([])
     await relay.run_relay(browser)
     assert browser.sent[0]["type"] == "error"
@@ -235,8 +236,9 @@ async def test_the_delegate_tool_is_offered_only_when_the_lane_answers(opened):
     live = opened(FakeLive(incoming=[]), lane=(agent_lane.STATUS_ABSENT, "nothing listening"))
     browser = FakeBrowser([])
     await relay.run_relay(browser)
-    assert opened.seen["tools"] is None
-    assert {"type": "lane", "status": "absent", "detail": "nothing listening"} in browser.sent
+    assert opened.seen["tools"] == 'unset'
+    assert browser.sent[0]['type'] == 'error'
+    assert 'nothing listening' in browser.sent[0]['detail']
 
 
 @pytest.mark.asyncio

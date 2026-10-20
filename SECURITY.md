@@ -5,6 +5,18 @@ fix lands, email the maintainer through their GitHub profile instead.
 
 ## What this plugin touches
 
+- **Native Desktop conversation.** Voice work submits through the exact mounted Hermes
+  composer and explicit owning connection/profile. The configured coding model executes it.
+  Request receipts (including task text, public progress and bounded final output) persist in
+  Desktop localStorage, capped at 200 entries. Recent visible chat context (up to 6000
+  characters), the task board and bounded completion summaries can be sent to Gemini while
+  voice is connected. System prompts and private reasoning are excluded from that briefing.
+  Ending voice closes Google audio only; native work and saved chat results continue.
+  Native approval and Stop controls remain in Hermes; Gemini cannot grant approval.
+- **Legacy receipts.** API-worker receipts are stored in a profile-local SQLite plugin
+  database so reconnect can find work without creating it again. Compatibility lookups use
+  optional core continuation helpers; absence falls back to exact stored conversation IDs.
+
 - **Your `GEMINI_API_KEY`.** Read from the Hermes home's `.env` (or the environment) inside the
   backend process, and written into the upstream websocket URL — the Live API takes the
   credential that way, which is precisely why audio relays through the backend instead of the

@@ -42,8 +42,8 @@ PARAMETERS = {
         "task": {
             "type": "STRING",
             "description": "What to do, self-contained: name files, commands, URLs and "
-                           "the exact question the user asked, since Hermes does not see "
-                           "this conversation.",
+                           "the exact question the user asked. Hermes has the chat history; "
+                           "preserve all spoken details without inventing requirements.",
         },
         "context": {
             "type": "STRING",
@@ -116,11 +116,16 @@ OUTPUT_SHAPE = (
 )
 
 
-def compose_prompt(args: dict) -> str:
+def compose_prompt(args: dict, voice_summary=True, transcript='') -> str:
     """The run's prompt text: task, plus any context the model chose to pass."""
     task = str((args or {}).get("task") or "").strip()
     context = str((args or {}).get("context") or "").strip()
     if not task:
         return ""
     prompt = f"{task}\n\nContext from the voice call: {context}" if context else task
-    return prompt + OUTPUT_SHAPE
+    if transcript:
+        prompt += (
+            "\n\nUser speech transcribed during this call since the previous handoff "
+            "(conversation context; preserve the relevant requirements, numbers, exclusions "
+            "and corrections, rather than relying only on the summary above):\n" + transcript)
+    return prompt + OUTPUT_SHAPE if voice_summary else prompt

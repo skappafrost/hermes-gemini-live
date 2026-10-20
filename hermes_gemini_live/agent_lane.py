@@ -194,6 +194,8 @@ def submit(prompt: str, session_id: str | None = None,
     run_id = payload.get("run_id") if isinstance(payload, dict) else None
     if not isinstance(run_id, str) or not run_id:
         raise LaneUnavailable("the Hermes api server returned a run with no id")
+    from . import task_store
+    task_store.record(run_id, prompt, profile, conversation_id=session_id)
     return run_id
 
 
@@ -339,7 +341,8 @@ class RunBook:
     re-running it, and so a task the model addressed by id can be resolved back to its run.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, conversation_id=None) -> None:
+        self.conversation_id = conversation_id
         self._tasks: dict[str, dict] = {}
         self._lock = threading.Lock()
 
@@ -348,6 +351,32 @@ class RunBook:
             self._tasks[task_id] = {"id": task_id, "prompt": prompt[:120], "run_id": None,
                                     "state": "running", "question": "", "result": "",
                                     "request_id": ""}
+
+    def restore(self, session_key=None, profile=None, conversation_id=None) -> int:
+        """Recover durable receipts and refresh status; NEVER submit or restart work."""
+        from . import task_store
+        conversation_id = conversation_id or self.conversation_id
+        with self._lock:
+            known = {row['run_id']: key for key, row in self._tasks.items() if row['run_id']}
+        restored = 0
+        for row in reversed(task_store.list_tasks(profile, conversation_id=conversation_id)[:20]):
+            run_id = row['run_id']
+            task_id = known.get(run_id, run_id)
+            if run_id not in known:
+                self.register(task_id, row['prompt'])
+                self.attach_run(task_id, run_id)
+                restored += 1
+            try:
+                current = fetch(run_id, session_key=session_key, profile=profile)
+                state = str(current.get('status') or 'unknown')
+                self.set_state(task_id, 'needs_input' if state == NEEDS_INPUT else state,
+                               result=speakable(str(current.get('output') or '')),
+                               question=_approval_question(current.get('approval') or {}) if state == NEEDS_INPUT else '',
+                               request_id=str((current.get('approval') or {}).get('request_id') or ''))
+                task_store.update(run_id, state, profile)
+            except LaneUnavailable:
+                self.set_state(task_id, 'unknown')
+        return restored
 
     def run_id(self, task_id: str) -> str | None:
         with self._lock:
@@ -402,7 +431,7 @@ class RunBook:
 
 def start_task(prompt: str, on_finished, session_key: str | None = None,
                book: RunBook | None = None, profile: str | None = None,
-               task_id: str | None = None, on_needs_input=None) -> str:
+               task_id: str | None = None, on_needs_input=None, conversation_id=None) -> str:
     """Hand a task to the pool and return immediately.
 
     ``on_finished(task_id, state, text)`` is called later from a worker thread, so the
@@ -416,11 +445,15 @@ def start_task(prompt: str, on_finished, session_key: str | None = None,
 
     def worker() -> tuple[str, str]:
         try:
-            run_id = submit(prompt, session_key=session_key, profile=profile)
+            extra = {'session_id': conversation_id} if conversation_id else {}
+            run_id = submit(prompt, session_key=session_key, profile=profile, **extra)
             if book is not None:
                 book.attach_run(task_id, run_id)
-            return await_result(run_id, session_key=session_key, profile=profile,
-                                on_needs_input=_parked(book, task_id, on_needs_input))
+            result = await_result(run_id, session_key=session_key, profile=profile,
+                                  on_needs_input=_parked(book, task_id, on_needs_input))
+            from . import task_store
+            task_store.update(run_id, result[0], profile)
+            return result
         except LaneUnavailable as exc:
             return "unavailable", speakable(str(exc))
 

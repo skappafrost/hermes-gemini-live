@@ -38,6 +38,15 @@ jobs:
           node-version: "20"
       - name: syntax check
         run: node --check desktop/plugin.js
+      - name: native workflow and UI regressions
+        run: |
+          node tests/native-workflow.test.cjs
+          node tests/compact-status.test.cjs
+          node tests/voice-origin-status.test.cjs
+          node tests/thread-switch.test.cjs
+          node tests/conversation-progress.test.cjs
+          node tests/task-history.test.cjs
+          node tests/playback-speed.test.cjs
       - name: only the allowed specifiers may be imported
         run: |
           set -e

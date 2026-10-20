@@ -105,7 +105,9 @@ def browser_frames(raw: dict) -> list[dict]:
         out.append({"type": "turn_complete"})
 
     for field, kind in (("inputTranscription", "in_text"), ("outputTranscription", "out_text")):
-        transcript = raw.get(field) or {}
+        # Google's documented shape nests transcripts under serverContent. Retain
+        # the legacy top-level form, without emitting the same chunk twice.
+        transcript = content.get(field) or raw.get(field) or {}
         if text := (transcript.get("text") or ""):
             out.append({"type": kind, "text": text})
 
