@@ -227,3 +227,49 @@ def test_the_board_keeps_waiting_and_finished_tasks_visible_to_the_call():
     row = [line for line in book.board().splitlines() if line.startswith("#b")][0]
     assert "[completed]" in row and "sunny, 31 degrees" in row
     assert book.run_id("nope") is None and book.request_id("nope") == ""
+
+
+def _fake_scope(monkeypatch, get_secret):
+    """Install a stand-in for the host's agent.secret_scope module."""
+    import sys
+    import types
+
+    module = types.ModuleType("agent.secret_scope")
+
+    class UnscopedSecretError(RuntimeError):
+        pass
+
+    module.UnscopedSecretError = UnscopedSecretError
+    module.get_secret = get_secret
+    package = types.ModuleType("agent")
+    package.secret_scope = module
+    package.UnscopedSecretError = UnscopedSecretError
+    monkeypatch.setitem(sys.modules, "agent", package)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", module)
+    return UnscopedSecretError
+
+
+def test_a_blank_scope_value_still_reads_the_process_env(monkeypatch):
+    # get_secret answers empty when the scope is bound to a home that has no such
+    # key; that is a miss, not the deliberate "send no Authorization" opt-out.
+    _fake_scope(monkeypatch, lambda name: "")
+    monkeypatch.setenv("API_SERVER_KEY", "launch-key")
+    assert agent_lane.key() == "launch-key"
+
+
+def test_a_broken_scope_does_not_silence_the_lane(monkeypatch):
+    _fake_scope(monkeypatch, lambda name: (_ for _ in ()).throw(RuntimeError("scope gone")))
+    monkeypatch.setenv("API_SERVER_KEY", "launch-key")
+    assert agent_lane.key() == "launch-key"
+
+
+def test_the_run_submitted_from_a_worker_thread_keeps_its_key(monkeypatch):
+    # start_task() submits to a ThreadPoolExecutor and contextvars do not cross a
+    # thread boundary: inside the worker the scope is empty, and a run that leaves
+    # without an Authorization header comes back 401.
+    from concurrent.futures import ThreadPoolExecutor
+
+    _fake_scope(monkeypatch, lambda name: "")
+    monkeypatch.setenv("API_SERVER_KEY", "launch-key")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(agent_lane.key).result(timeout=10) == "launch-key"
