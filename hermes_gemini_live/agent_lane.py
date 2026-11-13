@@ -120,11 +120,20 @@ def key(profile: str | None = None) -> str | None:
 
 def _read_key() -> str | None:
     try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        raw = get_secret("API_SERVER_KEY")
-    except ImportError:
-        raw = os.environ.get("API_SERVER_KEY")
-    except UnscopedSecretError:
+        from agent.secret_scope import get_secret
+    except ImportError:  # standalone plugin, no host package on the path
+        get_secret = None
+    raw = None
+    if get_secret is not None:
+        try:
+            raw = get_secret("API_SERVER_KEY")
+        except Exception:  # UnscopedSecretError, or a scope that went away
+            raw = None
+    if not (raw or "").strip():
+        # The scope is a contextvar: a worker thread inherits none of it, and
+        # start_task() submits from a pool, so the run would leave with no
+        # Authorization header and the api_server answers 401. The process
+        # environment carries the same key in `hermes serve` and the gateway.
         raw = os.environ.get("API_SERVER_KEY")
     if raw is None:
         return None
